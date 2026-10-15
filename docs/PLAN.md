@@ -193,7 +193,7 @@ Phase 3: files
 - [x] Shell integration (OSC 133): bash, zsh and fish 3 are set up automatically, locally and over ionterm's SSH (fish 4 marks prompts itself). Jump between prompts (ctrl+shift+z / x), copy the last command's output (ctrl+shift+g), ctrl+shift+right-click selects a command's output, a red mark beside prompts whose command failed, and clicks on the command line move the cursor (fish's `click_events`)
 - [x] Progress in the tab: OSC 9;4 (cargo, systemd, winget…), or a percentage on a line a command keeps rewriting (curl, wget, pacman)
 - SSH wrapper with terminfo install and fallback
-- Hints mode (URLs, paths, hashes, `file:line`)
+- [x] Hints mode (ctrl+shift+e): URLs (and OSC 8 links), file paths, `file:line[:col]`, git hashes and IPs get home-row labels; typing one opens it (files in `$EDITOR` at the line in a new tab, or the `[hints] open_file` command), shift copies, alt types it into the command line. Paths in SSH panes are copied
 - Scrollback search (plain + regex, highlighted matches)
 - Background image/opacity, cursor trail
 

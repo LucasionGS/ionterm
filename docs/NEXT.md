@@ -33,6 +33,7 @@ Done so far, in commit order (`git log --oneline`):
 7. **SSH phase 3, task 2 (drag and drop):** `dnd/` (`wayland.rs` binds our own `wl_data_device` on winit's display, on its own queue and thread; `App::exiting` must drop the listener before winit disconnects) and `app/drag.rs` (drop targets, the highlight while dragging, upload or paste).
 8. **SSH phase 3, task 3 (rsync, ZMODEM, `ionterm-get`/`ionterm-put`):** `files/rsync.rs`, `zmodem/` (`frame.rs` wire format, `mod.rs` detector and session) wired into `pty.rs`'s reader, `app/rzsz.rs`, and OSC 5379 in `ionterm-vt`. See "SSH phase 3: files" below.
 9. **Shell integration (v0.3b):** OSC 133 marks on rows (`Row::prompt`, `output`, `status`; carried through reflow) and the queries on `Term` (`prompt_lines`, `command_output_at`, `last_command_output`, `failed_commands_in_view`, `click_goes_to_shell`, `progress`, `progress_hint`). `shell.rs` injects `extras/shell-integration/ionterm.{bash,zsh,fish}` into the local login shell (bash `--rcfile`, zsh `ZDOTDIR`, fish 3 `-C`; fish 4 needs nothing), and `ssh/bootstrap.rs` embeds the same files. `app/integration.rs` has the prompt jumps, output copy/select, failed marks and the tab progress bars (`tabbar::draw_progress`).
+10. **Hints mode (v0.3b):** `hints.rs` (finding URLs, paths, `file:line`, hashes and IPs in a line; labels; editor commands, testable without a window) and `app/hints.rs` (the overlay, keys, and open/copy/insert). Local paths are checked against the shell's directory; SSH panes can't be checked, so only clear paths count there and picking one copies it.
 
 ## Code map
 
@@ -61,9 +62,10 @@ crates/ionterm/          the app
   dnd/                   drops: mod.rs (uri-list, shell quoting), wayland.rs (own wl_data_device; winit 0.30 has none)
   dialog.rs              generic modal: buttons, optional input and checkbox
   app/                   files.rs (panel requests, conflicts, toasts, transfer card), drag.rs (drop targets), rzsz.rs (ZMODEM glue),
-                         integration.rs (prompt jumps, output copy/select, failed marks, tab progress)
+                         integration.rs (prompt jumps, output copy/select, failed marks, tab progress), hints.rs (hints overlay)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
+  hints.rs               hints mode: finding URLs/paths/file:line/hashes/IPs, labels, editor commands
   config.rs / theme.rs / links.rs
 extras/                  terminfo source, Ionix styler theme files + install functions, example ionterm.toml
 scripts/keytest.sh       real-keystroke test of the keyboard protocol (Hyprland)
@@ -162,7 +164,6 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
 ## Next tasks (from docs/PLAN.md)
 
 - **v0.3b power features:**
-  - Hints mode (`ctrl+shift+e`): pick URLs, paths and hashes with the keyboard.
   - Scrollback search.
   - Background image; cursor trail.
 - **v0.2 leftovers:** kitty graphics animation (`a=f`, `a=a`, `a=c`), relative placements (`P`, `Q`), dragging split borders with the mouse.

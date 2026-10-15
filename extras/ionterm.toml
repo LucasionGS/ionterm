@@ -39,6 +39,9 @@ panel_width = 46                     # columns, at most half the window
 download_dir = ""                    # empty = the system's Downloads folder
 show_hidden = false                  # dotfiles in the SSH file panel (ctrl+h toggles)
 
+[hints]
+open_file = ""                       # command for picked files: {path} {line} {col}, e.g. "code -g {path}:{line}:{col}"; empty = $EDITOR in a new tab
+
 [cursor]
 shape = "beam"                       # block | beam | underline
 blink_interval = 0.5                 # seconds, 0 = no blinking
@@ -82,6 +85,7 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "ctrl+shift+z" = "previous_prompt"
 # "ctrl+shift+x" = "next_prompt"
 # "ctrl+shift+g" = "copy_last_command_output"
+# "ctrl+shift+e" = "hints"
 # "ctrl+shift+equal" = "increase_font_size"
 # "ctrl+shift+minus" = "decrease_font_size"
 # "ctrl+shift+backspace" = "reset_font_size"

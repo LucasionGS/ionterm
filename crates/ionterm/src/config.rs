@@ -26,6 +26,7 @@ pub struct Config {
     pub tab_bar: TabBarConfig,
     pub layouts: LayoutConfig,
     pub files: FilesConfig,
+    pub hints: HintsConfig,
     /// Key combo → action name, merged over the defaults. `"none"` unbinds.
     pub keybindings: HashMap<String, String>,
 }
@@ -84,6 +85,16 @@ impl Default for WindowConfig {
             lines: 30,
         }
     }
+}
+
+/// Hints mode (ctrl+shift+e).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HintsConfig {
+    /// The command that opens a picked file, with `{path}`, `{line}` and
+    /// `{col}` filled in (`code -g {path}:{line}`). Empty = `$VISUAL` or
+    /// `$EDITOR` in a new tab.
+    pub open_file: String,
 }
 
 /// The file panel of SSH tabs.

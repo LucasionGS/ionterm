@@ -558,6 +558,8 @@ pub enum Action {
     NextPrompt,
     /// Copies the last command's output to the clipboard.
     CopyLastOutput,
+    /// Labels URLs, paths, hashes and addresses on screen to pick one.
+    Hints,
     IncreaseFontSize,
     DecreaseFontSize,
     ResetFontSize,
@@ -621,6 +623,7 @@ impl Action {
             "previous_prompt" => Self::PreviousPrompt,
             "next_prompt" => Self::NextPrompt,
             "copy_last_command_output" | "copy_last_output" | "show_last_command_output" => Self::CopyLastOutput,
+            "hints" | "open_url_with_hints" => Self::Hints,
             "increase_font_size" => Self::IncreaseFontSize,
             "decrease_font_size" => Self::DecreaseFontSize,
             "reset_font_size" => Self::ResetFontSize,
@@ -671,6 +674,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+z", "previous_prompt"),
     ("ctrl+shift+x", "next_prompt"),
     ("ctrl+shift+g", "copy_last_command_output"),
+    ("ctrl+shift+e", "hints"),
     ("ctrl+shift+equal", "increase_font_size"),
     ("ctrl+shift+plus", "increase_font_size"),
     ("ctrl+shift+minus", "decrease_font_size"),

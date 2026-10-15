@@ -7,7 +7,7 @@ use ionterm_vt::{Flags, Term};
 /// URI printed by a program) is ignored rather than handed to the desktop.
 const OPENABLE_SCHEMES: &[&str] = &["http://", "https://", "file://", "ftp://", "mailto:"];
 /// Schemes recognised in plain text.
-const TEXT_SCHEMES: &[&str] = &["https://", "http://", "file://", "ftp://", "mailto:"];
+pub const TEXT_SCHEMES: &[&str] = &["https://", "http://", "file://", "ftp://", "mailto:"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkKind {
@@ -86,13 +86,13 @@ fn url_at(term: &Term, line: usize, col: usize) -> Option<Link> {
     None
 }
 
-fn is_url_char(c: char) -> bool {
+pub fn is_url_char(c: char) -> bool {
     !c.is_whitespace() && !c.is_control() && !matches!(c, '<' | '>' | '"' | '`' | '{' | '}' | '|' | '\\' | '^')
 }
 
 /// Drops trailing punctuation that belongs to the sentence, not the URL. A
 /// closing bracket stays when the URL opened one (`wiki/Foo_(bar)`).
-fn trim_url_end(url: &[char]) -> usize {
+pub fn trim_url_end(url: &[char]) -> usize {
     let mut end = url.len();
     while end > 0 {
         let c = url[end - 1];

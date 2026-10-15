@@ -3,6 +3,7 @@
 
 mod drag;
 mod files;
+mod hints;
 mod integration;
 mod rzsz;
 
@@ -142,6 +143,8 @@ struct TermWindow {
     dropped: Vec<PathBuf>,
     /// The transfer-list entry of each pane's current ZMODEM file.
     zmodem_transfers: HashMap<PaneId, TransferId>,
+    /// Hints mode, while it's shown.
+    hints: Option<hints::HintsMode>,
 }
 
 struct TabDrag {
@@ -293,6 +296,7 @@ impl App {
             file_drag: None,
             dropped: Vec::new(),
             zmodem_transfers: HashMap::new(),
+            hints: None,
         };
         w.drops = dnd::listen(&w.window, self.proxy.clone());
         w.relayout(&self.config, false);
@@ -593,20 +597,39 @@ impl App {
     fn open_tab(&mut self, index: usize, connection: Option<Connection>, cwd: Option<PathBuf>) {
         let Some(w) = &self.window else { return };
         let metrics = w.renderer.cell_metrics();
-        let layout = self.default_layout();
         match self.spawn_pane(metrics, connection, cwd) {
-            Ok(pane) => {
-                let Some(w) = &mut self.window else { return };
-                let index = index.min(w.tabs.len());
-                w.tabs.insert(index, Tab::new(pane, layout));
-                if index <= w.active_tab {
-                    w.active_tab += 1;
-                }
-                w.select_tab(index);
-                w.relayout(&self.config, false);
-            }
+            Ok(pane) => self.insert_tab(index, pane),
             Err(error) => tracing::warn!("could not open a tab: {error:#}"),
         }
+    }
+
+    /// Opens a tab running a command (an editor) instead of the shell; it
+    /// closes when the command ends.
+    fn open_command_tab(&mut self, argv: Vec<String>, cwd: Option<PathBuf>) {
+        let Some(w) = &self.window else { return };
+        let metrics = w.renderer.cell_metrics();
+        let index = w.active_tab + 1;
+        let mut terminal = self.config.terminal.clone();
+        terminal.command = argv;
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
+        match Pane::spawn(id, &terminal, None, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem) {
+            Ok(pane) => self.insert_tab(index, pane),
+            Err(error) => tracing::warn!("could not open a tab: {error:#}"),
+        }
+    }
+
+    fn insert_tab(&mut self, index: usize, pane: Pane) {
+        let layout = self.default_layout();
+        let Some(w) = &mut self.window else { return };
+        let index = index.min(w.tabs.len());
+        w.tabs.insert(index, Tab::new(pane, layout));
+        if index <= w.active_tab {
+            w.active_tab += 1;
+        }
+        w.select_tab(index);
+        w.relayout(&self.config, false);
     }
 
     fn menu_command(&mut self, tab: usize, command: MenuCommand) {
@@ -756,6 +779,7 @@ impl App {
             Action::PreviousPrompt => self.jump_to_prompt(false),
             Action::NextPrompt => self.jump_to_prompt(true),
             Action::CopyLastOutput => self.copy_last_output(),
+            Action::Hints => self.toggle_hints(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
@@ -962,6 +986,14 @@ impl App {
             winit::event::MouseButton::Right => MouseButton::Right,
             _ => return FollowUp::None,
         };
+        // A click dismisses hints.
+        if state == ElementState::Pressed
+            && let Some(w) = &mut self.window
+            && w.hints.take().is_some()
+        {
+            w.window.request_redraw();
+            return FollowUp::None;
+        }
         let pressed = state == ElementState::Pressed;
         if let Some(action) = self.tab_bar_click(button, pressed) {
             match action {
@@ -1816,6 +1848,7 @@ impl TermWindow {
             animating |= infos.iter().any(|t| t.progress.is_some_and(|p| p.fraction.is_none()));
         }
         self.draw_failed_marks(theme, &mut items);
+        self.draw_hints(theme, &mut items);
         self.draw_files(theme, &mut items);
         self.draw_drag(theme, &mut items);
         if let Some(open) = &self.menu {
@@ -1999,6 +2032,20 @@ impl ApplicationHandler<UserEvent> for App {
             } => {
                 let blink = self.blink_interval();
                 let Some(w) = &mut self.window else { return };
+                // Hints take every key while shown (ctrl+shift+e again hides them).
+                if w.hints.is_some() {
+                    let toggle = KeyCombo::from_event(&event, w.modifiers)
+                        .and_then(|combo| self.bindings.get(&combo).copied())
+                        == Some(Action::Hints);
+                    if event.state == ElementState::Pressed {
+                        if toggle {
+                            self.toggle_hints();
+                        } else {
+                            self.hints_key(&event);
+                        }
+                    }
+                    return;
+                }
                 if let Some(open) = &mut w.dialog {
                     if event.state != ElementState::Pressed {
                         return;
