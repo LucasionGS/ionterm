@@ -30,6 +30,7 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **Never miss a finished build**: tabs you're not looking at show a dot for new output, a bell when something rings, and a ✓ or ✗ when a long command finishes. If you're in another window, you get a desktop notification too ("✗ cargo build (exit 101), finished after 2m 03s"). Programs can send their own notifications with OSC 9 / 777.
 - **Progress in the tab**: downloads, builds and updates fill a bar along the bottom of their tab, whether the program reports its progress or just prints `45%`.
 - **Splits and layouts**: split any pane and drag the borders between them, type into all of them at once with ctrl+shift+b (handy for a few servers), or let kitty-style layouts (tall, fat, grid, stack) arrange them. New tabs and splits open in the directory you're in.
+- **Pick up where you left off**: turn on `restore` under `[session]` and the next window reopens your tabs, splits, folders and SSH connections, exactly as you had them. Close every tab yourself and you start fresh.
 - **Scriptable**: `ionterm @` drives the terminal from scripts: open tabs and splits running commands, type into panes, read their text, retitle tabs or run any keybinding action. See [Remote control](#remote-control).
 - **SSH-friendly**: `TERM` falls back to `xterm-256color` whenever the remote end might not know `xterm-ionterm`, so no more "unknown terminal".
 

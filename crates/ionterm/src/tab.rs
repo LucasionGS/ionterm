@@ -51,6 +51,20 @@ impl Tab {
         }
     }
 
+    /// A tab put back together from a saved session.
+    pub fn restored(mut panes: Vec<Pane>, tree: SplitNode, active: PaneId, layout: Layout) -> Self {
+        let rest = panes.split_off(1);
+        let mut tab = Self::new(panes.pop().expect("a restored tab has a pane"), layout);
+        tab.panes.extend(rest);
+        tab.tree = tree;
+        tab.active = active;
+        tab
+    }
+
+    pub fn tree(&self) -> &SplitNode {
+        &self.tree
+    }
+
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
         self.panes.iter().find(|p| p.id == id)
     }

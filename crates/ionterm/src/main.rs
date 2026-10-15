@@ -19,6 +19,7 @@ mod pty;
 mod remote;
 mod scrollback;
 mod search;
+mod session;
 mod settings;
 mod shell;
 mod ssh;

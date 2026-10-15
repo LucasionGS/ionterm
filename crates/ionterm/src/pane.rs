@@ -82,6 +82,9 @@ pub struct Pane {
     /// The command running (shell integration): when it started, and its
     /// command line when the shell says.
     pub command: Option<(Instant, Option<String>)>,
+    /// It was started for a program (`-e`, an editor, a pager) rather than
+    /// the shell, so it isn't reopened with the session.
+    pub runs_command: bool,
 }
 
 /// A pane's progress: reported by the program (OSC 9;4), or read from a
@@ -154,6 +157,7 @@ impl Pane {
             zmodem,
             progress: None,
             command: None,
+            runs_command: !config.command.is_empty(),
         })
     }
 

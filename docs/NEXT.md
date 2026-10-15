@@ -68,6 +68,7 @@ crates/ionterm/          the app
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
   remote.rs              `ionterm @`: socket, client, request parsing (commands run in app/remote.rs)
+  session.rs             session restore: the TOML file, ownership between windows, the split tree as text (app/session.rs builds and reopens it)
   scrollback.rs          the scrollback as ANSI text for the pager (ctrl+shift+h), the pager command
   hints.rs               hints mode: finding URLs/paths/file:line/hashes/IPs, labels, editor commands
   settings.rs            the settings page: settings list, controls, keys, layout and drawing

@@ -202,6 +202,7 @@ Phase 3: files
 - [x] Command palette (ctrl+shift+p): every action with its keybinding, fuzzy-searched, plus SSH hosts to connect to (`commands.rs`, reusing the picker in `palette.rs`)
 - [x] Scrollback search (ctrl+shift+f): plain or regex (alt+r), smart case, across soft wraps, every match highlighted, Enter/shift+Enter or arrows to step, re-searched as output arrives. Moving panes moved to ctrl+shift+alt+f / b
 - [x] Scrollback in a pager (ctrl+shift+h, kitty's `show_scrollback`): the whole history with colours, wrapped lines joined, opened in `less -R` in a tab at the line on screen; `[terminal] scrollback_pager` with `INPUT_LINE_NUMBER`
+- [x] Session restore (`[session] restore`, off by default): tabs, split trees with their ratios, layouts, folders, SSH hosts, tab titles and colours, saved every few seconds when they change and on window close (`$XDG_STATE_HOME/ionterm/session.toml`). Closing the last tab ends the session; with several windows the first owns it. Scrollback isn't kept
 - [x] Broadcast input (ctrl+shift+b): typing and pasting go to every pane of the tab, each key encoded for that pane's modes; yellow borders and a broadcast tab icon while on
 - Background image/opacity, cursor trail
 

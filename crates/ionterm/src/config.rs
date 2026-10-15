@@ -88,6 +88,7 @@ pub struct Config {
     pub files: FilesConfig,
     pub hints: HintsConfig,
     pub notifications: NotificationsConfig,
+    pub session: SessionConfig,
     /// Key combo → action name, merged over the defaults. `"none"` unbinds.
     pub keybindings: HashMap<String, String>,
 }
@@ -166,6 +167,15 @@ impl Default for NotificationsConfig {
             from_programs: true,
         }
     }
+}
+
+/// Reopening the last window's tabs.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// Reopen the tabs, splits, directories and SSH connections the last
+    /// window had when it was closed.
+    pub restore: bool,
 }
 
 /// Hints mode (ctrl+shift+e).

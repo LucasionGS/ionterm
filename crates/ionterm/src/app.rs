@@ -8,6 +8,7 @@ mod integration;
 mod remote;
 mod rzsz;
 mod search;
+mod session;
 mod settings;
 
 use std::collections::HashMap;
@@ -96,6 +97,10 @@ pub struct App {
     next_pane_id: PaneId,
     /// Set when the last tab closes; the event loop exits on its next pass.
     exit_requested: bool,
+    /// When the session is next compared with the saved one, and what was
+    /// last saved.
+    session_due: Instant,
+    session_saved: Option<crate::session::Session>,
     /// This machine's name, to tell remote directory reports from local ones.
     local_host: String,
     _watcher: Option<notify::RecommendedWatcher>,
@@ -212,6 +217,8 @@ impl App {
             reload_at: None,
             next_pane_id: 1,
             exit_requested: false,
+            session_due: Instant::now(),
+            session_saved: None,
             local_host: ssh::local_hostname(),
             _watcher: watcher,
             error: None,
@@ -276,13 +283,19 @@ impl App {
             (f32::from(self.config.window.lines) * m.height + 2.0 * pad) as u32,
         ));
 
-        let connection = self.config.terminal.startup_ssh.clone().map(|alias| self.connection_for(&alias));
-        let pane = self.spawn_pane(m, connection, None)?;
+        let (tabs, active_tab) = match self.restore_session(m) {
+            Some(restored) => restored,
+            None => {
+                let connection = self.config.terminal.startup_ssh.clone().map(|alias| self.connection_for(&alias));
+                let pane = self.spawn_pane(m, connection, None)?;
+                (vec![Tab::new(pane, self.default_layout())], 0)
+            }
+        };
         let mut w = TermWindow {
             window,
             renderer,
-            tabs: vec![Tab::new(pane, self.default_layout())],
-            active_tab: 0,
+            tabs,
+            active_tab,
             scale_factor,
             font_size,
             modifiers: ModifiersState::empty(),
@@ -880,6 +893,8 @@ impl App {
             // Events still queued (the key's release) must not find a window
             // without tabs.
             self.window = None;
+            // Closing every tab yourself ends the session.
+            crate::session::remove_ours();
             self.exit_requested = true;
             return;
         }
@@ -2327,7 +2342,11 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Closing the window keeps the session for next time.
+                self.save_session(Instant::now(), true);
+                event_loop.exit();
+            }
             WindowEvent::RedrawRequested => {
                 if let Some(w) = &mut self.window {
                     w.redraw(&self.config, &self.theme);
@@ -2574,7 +2593,11 @@ impl ApplicationHandler<UserEvent> for App {
         let blink = self.blink_interval();
         let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
         let search_wake = self.window.as_mut().and_then(|w| w.refresh_search(now));
-        let mut wake = [self.reload_at, self.expire_files(now), progress_wake, search_wake].into_iter().flatten().min();
+        let session_wake = self.save_session(now, false);
+        let mut wake = [self.reload_at, self.expire_files(now), progress_wake, search_wake, session_wake]
+            .into_iter()
+            .flatten()
+            .min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

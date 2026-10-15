@@ -4,7 +4,7 @@
 //! back restores the splits exactly. The other layouts ignore it and arrange
 //! panes by their order in the tab.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub type PaneId = u64;
 
@@ -57,7 +57,7 @@ pub enum Direction {
     Vertical,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Layout {
     /// Free splits in any direction.
