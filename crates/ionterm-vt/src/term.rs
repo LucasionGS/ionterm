@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
 use crate::base64;
-use crate::cell::{Cell, Flags, Row};
+use crate::cell::{Cell, CommandRun, Flags, Row};
 use crate::charset::Charset;
 use crate::color::{Color, Palette, Rgb};
 use crate::graphics::{Anchor, Command, Graphics, GraphicsError, Image, ImageDraw, Placement};
@@ -313,8 +313,9 @@ pub struct Term {
     /// The shell takes mouse clicks on its command line (OSC 133;A with
     /// `click_events=1`): they move its cursor.
     click_events: bool,
-    /// A command started (OSC 133;C) and hasn't finished (133;D).
-    command_running: bool,
+    /// When the running command started (OSC 133;C), until it finishes
+    /// (133;D).
+    command_started: Option<Instant>,
     /// The row a carriage return went back to, while it's rewritten in
     /// place (how curl or pacman draw progress); a line feed ends that.
     rewritten_row: Option<usize>,
@@ -372,7 +373,7 @@ impl Term {
             at_prompt: false,
             editing: false,
             click_events: false,
-            command_running: false,
+            command_started: None,
             rewritten_row: None,
             progress: None,
             graphics: Graphics::default(),
@@ -610,6 +611,13 @@ impl Term {
             .collect()
     }
 
+    /// The finished command whose prompt is on a viewport row: its exit
+    /// status and timing.
+    pub fn command_at_row(&self, row: usize) -> Option<(i32, CommandRun)> {
+        let line = self.line(self.viewport_to_absolute(row))?;
+        Some((line.status?, line.ran?))
+    }
+
     /// Whether a left click at a viewport row goes to the shell (to move
     /// its cursor) rather than starting a selection: the shell asked for
     /// clicks, and it's on the command line being edited.
@@ -645,11 +653,14 @@ impl Term {
     }
 
     /// Records an exit status on the prompt the finished command came from.
-    fn mark_status(&mut self, status: i32) {
-        if let Some(row) = (0..=self.cursor.row).rev().find(|&r| self.grid[r].prompt) {
-            self.grid[row].status = Some(status);
-        } else if let Some(row) = self.scrollback.iter_mut().rev().find(|r| r.prompt) {
+    fn mark_status(&mut self, status: i32, ran: CommandRun) {
+        let row = match (0..=self.cursor.row).rev().find(|&r| self.grid[r].prompt) {
+            Some(row) => Some(&mut self.grid[row]),
+            None => self.scrollback.iter_mut().rev().find(|r| r.prompt),
+        };
+        if let Some(row) = row {
             row.status = Some(status);
+            row.ran = Some(ran);
         }
         self.dirty = true;
     }
@@ -1800,7 +1811,7 @@ impl Perform for Term {
                     self.at_prompt = redraws;
                     self.editing = true;
                     self.click_events = params[2..].iter().any(|p| *p == b"click_events=1");
-                    self.command_running = false;
+                    self.command_started = None;
                     let row = self.cursor.row;
                     self.grid[row].prompt = true;
                     self.events.push(TermEvent::Prompt);
@@ -1809,7 +1820,7 @@ impl Perform for Term {
                 Some(Some(b'C')) => {
                     self.at_prompt = false;
                     self.editing = false;
-                    self.command_running = true;
+                    self.command_started = Some(Instant::now());
                     let row = self.cursor.row;
                     self.grid[row].output = true;
                     self.events.push(TermEvent::CommandStarted(command_line(&params[2..])));
@@ -1822,9 +1833,13 @@ impl Perform for Term {
                         .get(2)
                         .and_then(|p| std::str::from_utf8(p).ok())
                         .and_then(|p| p.parse::<i32>().ok());
-                    if std::mem::take(&mut self.command_running) {
+                    if let Some(started) = self.command_started.take() {
                         if let Some(status) = status {
-                            self.mark_status(status);
+                            let ran = CommandRun {
+                                duration: started.elapsed(),
+                                finished: std::time::SystemTime::now(),
+                            };
+                            self.mark_status(status, ran);
                         }
                         self.events.push(TermEvent::CommandFinished(status));
                     }
@@ -2434,6 +2449,8 @@ mod tests {
         assert_eq!(t.grid[0].status, Some(1));
         assert_eq!(t.grid[3].status, Some(0));
         assert_eq!(t.failed_commands_in_view(), vec![(0, 1)]);
+        assert!(t.command_at_row(0).is_some_and(|(status, _)| status == 1));
+        assert!(t.command_at_row(1).is_none());
         // Clicking the output or the command line picks the same output.
         assert_eq!(t.command_output_at(2), Some((1, 2)));
         assert_eq!(t.command_output_at(0), Some((1, 2)));

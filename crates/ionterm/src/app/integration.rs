@@ -1,14 +1,16 @@
 //! What shell integration gives the window: jumping between prompts,
 //! copying or selecting a command's output, marks beside failed commands,
-//! and tab progress bars (from OSC 9;4 or a percentage in the output).
+//! what a command did (hovering its prompt), and tab progress bars (from
+//! OSC 9;4 or a percentage in the output).
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use ionterm_render::ChromeItem;
-use ionterm_vt::{Progress, ProgressState};
+use ionterm_render::{ChromeItem, text_columns};
+use ionterm_vt::{CommandRun, Progress, ProgressState};
 
 use super::{App, TermWindow};
+use crate::layout::PaneId;
 use crate::pane::{Pane, PaneProgress, SelectionKind, SelectionState};
 use crate::tabbar::TabProgress;
 use crate::theme::Theme;
@@ -94,6 +96,59 @@ impl TermWindow {
             .progress
             .or_else(|| tab.panes.iter().find_map(|p| p.progress))
             .map(|p| p.shown)
+    }
+
+    /// The finished command whose prompt line the pointer is on, unless a
+    /// button is held (selecting).
+    pub(super) fn hovered_command(&self) -> Option<(PaneId, usize, i32, CommandRun)> {
+        let (id, (_, row)) = self.pointer_cell?;
+        let tab = &self.tabs[self.active_tab];
+        let pane = tab.pane(id).filter(|p| tab.is_visible(p.id) && !p.selecting && p.held_button.is_none())?;
+        let (status, ran) = pane.lock().command_at_row(row)?;
+        Some((id, row, status, ran))
+    }
+
+    /// A chip at the end of a hovered prompt line: how its command ended,
+    /// how long it ran and how long ago.
+    pub(super) fn draw_command_info(&self, theme: &Theme, out: &mut Vec<ChromeItem>) {
+        let Some((id, row, status, ran)) = self.hovered_command() else { return };
+        let Some(pane) = self.tabs[self.active_tab].pane(id) else { return };
+        let m = self.renderer.cell_metrics();
+        let colors = &theme.palette().colors;
+        let (icon, color) = if status == 0 { ("✓", colors[2]) } else { ("✗", colors[1]) };
+        let ago = ran.finished.elapsed().unwrap_or_default();
+        let text = match status {
+            0 => format!("took {} · {}", run_time(ran.duration), time_ago(ago)),
+            _ => format!("exit {status} · took {} · {}", run_time(ran.duration), time_ago(ago)),
+        };
+        let columns = text_columns(&text) + 4;
+        let width = columns as f32 * m.width;
+        let right = pane.origin[0] + pane.grid.0 as f32 * m.width;
+        let x = (right - width).max(pane.origin[0]).round();
+        let y = pane.origin[1] + row as f32 * m.height;
+        let bg = theme.background.0;
+        let fg = theme.foreground.0;
+        out.push(ChromeItem::RoundedRect {
+            rect: [x, y, width, m.height],
+            radius: (m.height / 2.0).round(),
+            top_only: false,
+            color: crate::tabbar::mix(bg, fg, 0.14),
+            alpha: 1.0,
+        });
+        out.push(ChromeItem::Text {
+            text: icon.into(),
+            x: x + m.width,
+            y,
+            color,
+            bold: true,
+        });
+        out.push(ChromeItem::Text {
+            text,
+            x: x + 3.0 * m.width,
+            y,
+            color: fg,
+            bold: false,
+        });
     }
 
     /// A red bar in the left padding beside prompts whose command failed.
@@ -186,4 +241,39 @@ pub(super) fn select_command_output(pane: &mut Pane, row: usize) -> bool {
         kind: SelectionKind::Simple,
     });
     true
+}
+
+/// A command's run time, finer for quick ones: "340ms", "2.4s", "1m 05s".
+fn run_time(d: Duration) -> String {
+    match d.as_millis() {
+        0..1000 => format!("{}ms", d.as_millis()),
+        1000..10_000 => format!("{:.1}s", d.as_secs_f32()),
+        _ => crate::notifications::duration(d),
+    }
+}
+
+/// How long ago something happened, roughly: "just now", "5m ago".
+fn time_ago(d: Duration) -> String {
+    match d.as_secs() {
+        0..10 => "just now".into(),
+        s @ 10..60 => format!("{s}s ago"),
+        s @ 60..3600 => format!("{}m ago", s / 60),
+        s @ 3600..86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn says_run_times_and_ages() {
+        assert_eq!(run_time(Duration::from_millis(340)), "340ms");
+        assert_eq!(run_time(Duration::from_millis(2440)), "2.4s");
+        assert_eq!(run_time(Duration::from_secs(65)), "1m 05s");
+        assert_eq!(time_ago(Duration::from_secs(3)), "just now");
+        assert_eq!(time_ago(Duration::from_secs(300)), "5m ago");
+        assert_eq!(time_ago(Duration::from_secs(7300)), "2h ago");
+    }
 }

@@ -4,7 +4,7 @@
 //! new width, so a long command or log line keeps reading as one line after a
 //! resize instead of being cut off.
 
-use crate::cell::{Cell, Flags, Row};
+use crate::cell::{Cell, CommandRun, Flags, Row};
 use crate::color::Color;
 use crate::graphics::Anchor;
 
@@ -14,6 +14,7 @@ struct Marks {
     prompt: bool,
     output: bool,
     status: Option<i32>,
+    ran: Option<CommandRun>,
 }
 
 impl Marks {
@@ -22,6 +23,7 @@ impl Marks {
             prompt: row.prompt,
             output: row.output,
             status: row.status,
+            ran: row.ran,
         }
     }
 }
@@ -130,6 +132,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
                     prompt: marks.prompt && first,
                     output: marks.output && first,
                     status: marks.status.filter(|_| first),
+                    ran: marks.ran.filter(|_| first),
                     anchors: std::mem::take(&mut row_anchors),
                 });
             }
@@ -159,6 +162,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             prompt: marks.prompt && first,
             output: marks.output && first,
             status: marks.status.filter(|_| first),
+                    ran: marks.ran.filter(|_| first),
             anchors: row_anchors,
         });
     }
@@ -215,6 +219,7 @@ mod tests {
             prompt: false,
             output: false,
             status: None,
+            ran: None,
             anchors: Vec::new(),
         }
     }
@@ -251,6 +256,7 @@ mod tests {
                 prompt: false,
                 output: false,
                 status: None,
+                ran: None,
                 anchors: Vec::new(),
             }],
             (0, 3),

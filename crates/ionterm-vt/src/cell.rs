@@ -84,6 +84,13 @@ impl Cell {
     }
 }
 
+/// A finished command's timing, timed from OSC 133;C to 133;D.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandRun {
+    pub duration: std::time::Duration,
+    pub finished: std::time::SystemTime,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub cells: Vec<Cell>,
@@ -96,6 +103,8 @@ pub struct Row {
     /// On a prompt row: the exit status of the command run from it
     /// (OSC 133;D), once it finished.
     pub status: Option<i32>,
+    /// On a prompt row: how long its command ran, and when it ended.
+    pub ran: Option<CommandRun>,
     /// Image placements whose top-left corner is on this row.
     pub anchors: Vec<Anchor>,
 }
@@ -108,6 +117,7 @@ impl Row {
             prompt: false,
             output: false,
             status: None,
+            ran: None,
             anchors: Vec::new(),
         }
     }

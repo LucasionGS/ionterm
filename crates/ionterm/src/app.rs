@@ -1588,7 +1588,11 @@ impl App {
         } else {
             CursorIcon::Text
         });
+        let chip_before = w.hovered_command().map(|c| (c.0, c.1));
         w.pointer_cell = cell;
+        if w.hovered_command().map(|c| (c.0, c.1)) != chip_before {
+            w.window.request_redraw();
+        }
 
         let modifiers = w.modifiers;
         if let Some((id, (col, row))) = cell
@@ -2137,6 +2141,7 @@ impl TermWindow {
         }
         self.draw_settings(config, theme, &mut items);
         self.draw_failed_marks(theme, &mut items);
+        self.draw_command_info(theme, &mut items);
         self.draw_search(theme, &mut items);
         self.draw_hints(theme, &mut items);
         self.draw_files(theme, &mut items);

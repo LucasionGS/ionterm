@@ -15,7 +15,7 @@ mod reflow;
 mod sixel;
 mod term;
 
-pub use cell::{Cell, Flags, Row};
+pub use cell::{Cell, CommandRun, Flags, Row};
 pub use color::{Color, Palette, Rgb};
 pub use diacritics::{PLACEHOLDER, diacritic_value};
 pub use graphics::{Image, ImageDraw, Placement};
