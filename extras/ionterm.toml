@@ -1,0 +1,43 @@
+# ionterm configuration. Copy to ~/.config/ionterm/ionterm.toml (Linux) or
+# %APPDATA%\ionterm\ionterm.toml (Windows). Every key is optional; the values
+# below are the defaults. Changes apply live.
+#
+# Colours live in theme.toml next to this file, which the Ionix styler manages.
+
+[font]
+family = "JetBrainsMono Nerd Font"   # empty = system monospace
+size = 11.0                          # points
+ligatures = true
+
+[window]
+padding = 8                          # logical pixels around the grid
+decorations = "auto"                 # auto | none | full (auto = none on Hyprland)
+# opacity = 0.92                     # overrides the theme's background_opacity
+columns = 100                        # initial size, if the compositor allows it
+lines = 30
+
+[terminal]
+scrollback_lines = 10000
+shell = ""                           # empty = your login shell
+term = "auto"                        # auto = xterm-ionterm if installed, else xterm-256color
+wheel_scroll_lines = 3
+
+[cursor]
+shape = "beam"                       # block | beam | underline
+blink_interval = 0.5                 # seconds, 0 = no blinking
+
+[keybindings]
+# Merged over the defaults; set an action to "none" to unbind a default.
+# "ctrl+shift+c" = "copy"
+# "ctrl+shift+v" = "paste"
+# "shift+insert" = "paste_selection"
+# "ctrl+shift+up" = "scroll_line_up"
+# "ctrl+shift+down" = "scroll_line_down"
+# "shift+page_up" = "scroll_page_up"
+# "shift+page_down" = "scroll_page_down"
+# "ctrl+shift+home" = "scroll_home"
+# "ctrl+shift+end" = "scroll_end"
+# "ctrl+shift+equal" = "increase_font_size"
+# "ctrl+shift+minus" = "decrease_font_size"
+# "ctrl+shift+backspace" = "reset_font_size"
+# "ctrl+shift+f5" = "reload_config"

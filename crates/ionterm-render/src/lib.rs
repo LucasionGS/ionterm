@@ -1,0 +1,658 @@
+//! GPU renderer for ionterm.
+//!
+//! Draws a [`Snapshot`] with wgpu as a single instanced draw of quads: cell
+//! backgrounds first, then glyphs, then decorations and the cursor. The grid
+//! is rebuilt from scratch each frame, which is cheap at terminal sizes and
+//! keeps the renderer stateless apart from the glyph atlas.
+
+mod atlas;
+mod boxdraw;
+mod font;
+
+use std::sync::Arc;
+
+use anyhow::{Context, anyhow};
+use bytemuck::{Pod, Zeroable};
+use ionterm_vt::{Cell, CursorShape, Flags, Palette, Rgb, Snapshot};
+use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
+
+use atlas::{ATLAS_SIZE, Atlas};
+pub use font::{CellMetrics, FontOptions};
+use font::{AtlasFull, Fonts, GlyphPiece};
+
+const KIND_SOLID: u32 = 0;
+const KIND_MASK: u32 = 1;
+const KIND_COLOR: u32 = 2;
+/// Width of the beam cursor and the outline of the unfocused cursor, in pixels.
+const CURSOR_LINE: f32 = 2.0;
+
+/// Visual settings that come from the config and theme rather than the terminal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderStyle {
+    /// Space around the grid, in pixels.
+    pub padding: f32,
+    /// Opacity of the default background; other backgrounds stay opaque.
+    pub background_opacity: f32,
+    pub cursor_shape: CursorShape,
+    /// Whether the user's cursor blinks; applications can override it.
+    pub cursor_blink: bool,
+    /// Text colour under a block cursor. `None` = the background colour.
+    pub cursor_text: Option<Rgb>,
+    pub selection_foreground: Option<Rgb>,
+    pub selection_background: Rgb,
+}
+
+/// Per-frame state the app owns.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameState {
+    pub focused: bool,
+    /// Blink phase; `false` hides a blinking cursor.
+    pub cursor_blink_on: bool,
+    pub selection: Option<Selection>,
+}
+
+/// A selected span in viewport coordinates, start before end. Rows may lie
+/// outside the viewport when the selection extends into scrolled-away lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub start: (isize, usize),
+    pub end: (isize, usize),
+}
+
+impl Selection {
+    pub fn contains(&self, row: isize, col: usize) -> bool {
+        (row, col) >= self.start && (row, col) <= self.end
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct Instance {
+    rect: [f32; 4],
+    uv: [f32; 4],
+    color: [f32; 4],
+    kind: u32,
+    _pad: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct Uniforms {
+    screen: [f32; 2],
+    atlas_size: [f32; 2],
+}
+
+pub struct Renderer {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
+    instances: wgpu::Buffer,
+    instance_capacity: usize,
+    atlas: Atlas,
+    fonts: Fonts,
+    style: RenderStyle,
+    supports_transparency: bool,
+    scratch: Vec<Instance>,
+}
+
+impl Renderer {
+    pub fn new<W>(window: Arc<W>, width: u32, height: u32, font: FontOptions, style: RenderStyle) -> anyhow::Result<Self>
+    where
+        W: HasWindowHandle + HasDisplayHandle + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let instance = wgpu::Instance::new(
+            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
+        );
+        let surface = instance.create_surface(window).context("creating the window surface")?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            force_fallback_adapter: false,
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .context("no GPU adapter can draw to this window")?;
+        tracing::info!("using GPU adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("ionterm"),
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            ..Default::default()
+        }))
+        .context("creating the GPU device")?;
+
+        let caps = surface.get_capabilities(&adapter);
+        // Colours are blended in sRGB space, like every other terminal, so a
+        // non-sRGB surface format is preferred.
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| !f.is_srgb())
+            .or(caps.formats.first().copied())
+            .ok_or_else(|| anyhow!("the window surface reports no formats"))?;
+        let supports_transparency = caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied);
+        let alpha_mode = if supports_transparency {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            caps.alpha_modes[0]
+        };
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        surface.configure(&device, &config);
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ionterm shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ionterm bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ionterm pipeline layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ionterm pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Instance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x4,
+                        1 => Float32x4,
+                        2 => Float32x4,
+                        3 => Uint32,
+                    ],
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("glyph sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let atlas = Atlas::new(&device);
+        let bind_group = create_bind_group(&device, &bind_group_layout, &uniforms, &atlas, &sampler);
+        let instance_capacity = 4096;
+        let instances = create_instance_buffer(&device, instance_capacity);
+
+        Ok(Self {
+            surface,
+            device,
+            queue,
+            config,
+            pipeline,
+            bind_group,
+            uniforms,
+            instances,
+            instance_capacity,
+            atlas,
+            fonts: Fonts::new(font),
+            style,
+            supports_transparency,
+            scratch: Vec::new(),
+        })
+    }
+
+    pub fn cell_metrics(&self) -> CellMetrics {
+        self.fonts.metrics()
+    }
+
+    pub fn font_options(&self) -> &FontOptions {
+        self.fonts.options()
+    }
+
+    /// How many columns and rows fit in a surface of this size.
+    pub fn grid_size(&self, width: u32, height: u32) -> (usize, usize) {
+        let m = self.fonts.metrics();
+        let usable_w = (width as f32 - 2.0 * self.style.padding).max(0.0);
+        let usable_h = (height as f32 - 2.0 * self.style.padding).max(0.0);
+        (
+            ((usable_w / m.width) as usize).max(2),
+            ((usable_h / m.height) as usize).max(1),
+        )
+    }
+
+    /// The cell under a point in surface pixels, clamped to the grid.
+    pub fn cell_at(&self, x: f64, y: f64, cols: usize, rows: usize) -> (usize, usize) {
+        let m = self.fonts.metrics();
+        let col = ((x as f32 - self.style.padding) / m.width).max(0.0) as usize;
+        let row = ((y as f32 - self.style.padding) / m.height).max(0.0) as usize;
+        (col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1)))
+    }
+
+    pub fn set_font(&mut self, font: FontOptions) {
+        self.fonts.set_options(font);
+        self.atlas.clear();
+    }
+
+    pub fn set_style(&mut self, style: RenderStyle) {
+        self.style = style;
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+    }
+
+    pub fn render(&mut self, snapshot: &Snapshot, frame: FrameState) {
+        let texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                return;
+            }
+            other => {
+                tracing::debug!("skipping frame: {other:?}");
+                return;
+            }
+        };
+
+        let mut instances = std::mem::take(&mut self.scratch);
+        instances.clear();
+        if !self.build_instances(snapshot, frame, &mut instances) {
+            // The atlas filled up mid-frame: start it over and rebuild once.
+            self.atlas.clear();
+            self.fonts.clear_rasters();
+            instances.clear();
+            self.build_instances(snapshot, frame, &mut instances);
+        }
+
+        if instances.len() > self.instance_capacity {
+            self.instance_capacity = instances.len().next_power_of_two();
+            self.instances = create_instance_buffer(&self.device, self.instance_capacity);
+        }
+        self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&instances));
+        self.queue.write_buffer(
+            &self.uniforms,
+            0,
+            bytemuck::bytes_of(&Uniforms {
+                screen: [self.config.width as f32, self.config.height as f32],
+                atlas_size: [ATLAS_SIZE as f32, ATLAS_SIZE as f32],
+            }),
+        );
+
+        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ionterm frame"),
+        });
+        {
+            let bg = snapshot.palette.background;
+            let alpha = if self.supports_transparency {
+                f64::from(self.style.background_opacity.clamp(0.0, 1.0))
+            } else {
+                1.0
+            };
+            let channel = |v: u8| f64::from(v) / 255.0 * alpha;
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ionterm pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: channel(bg.r),
+                            g: channel(bg.g),
+                            b: channel(bg.b),
+                            a: alpha,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if !instances.is_empty() {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, self.instances.slice(..));
+                pass.draw(0..4, 0..instances.len() as u32);
+            }
+        }
+        self.queue.submit([encoder.finish()]);
+        self.queue.present(texture);
+        self.scratch = instances;
+    }
+
+    /// Appends every quad for the frame. Returns `false` if the atlas ran out
+    /// of space part-way through.
+    fn build_instances(&mut self, snapshot: &Snapshot, frame: FrameState, out: &mut Vec<Instance>) -> bool {
+        let m = self.fonts.metrics();
+        let pad = self.style.padding;
+        let palette = &snapshot.palette;
+
+        let cursor = snapshot.cursor.filter(|c| {
+            let blinking = c.style.map_or(self.style.cursor_blink, |s| s.blinking);
+            !blinking || !frame.focused || frame.cursor_blink_on
+        });
+        let cursor_shape = cursor
+            .and_then(|c| c.style.map(|s| s.shape))
+            .unwrap_or(self.style.cursor_shape);
+        let block_cursor_at = cursor
+            .filter(|_| frame.focused && cursor_shape == CursorShape::Block)
+            .map(|c| (c.row, c.col));
+
+        // Glyphs and decorations go after every background, so glyphs that
+        // overhang their cell are never painted over by a neighbour.
+        let mut overlay = Vec::new();
+        let mut fg_colors = Vec::new();
+        for (row, line) in snapshot.lines.iter().enumerate() {
+            let y = pad + row as f32 * m.height;
+
+            // Backgrounds, and each cell's final text colour.
+            fg_colors.clear();
+            for (col, cell) in line.cells.iter().enumerate() {
+                let x = pad + col as f32 * m.width;
+                let (mut fg, mut bg) = cell_colors(cell, palette);
+                if frame.selection.is_some_and(|s| s.contains(row as isize, col)) {
+                    bg = Some(self.style.selection_background);
+                    fg = self.style.selection_foreground.unwrap_or(fg);
+                }
+                if block_cursor_at == Some((row, col)) {
+                    let w = if cell.flags.contains(Flags::WIDE) { m.width * 2.0 } else { m.width };
+                    out.push(solid([x, y, w, m.height], palette.cursor, 1.0));
+                    fg = self.style.cursor_text.unwrap_or(palette.background);
+                } else if let Some(bg) = bg {
+                    out.push(solid([x, y, m.width, m.height], bg, 1.0));
+                }
+                fg_colors.push(fg);
+                if !cell.flags.intersects(Flags::WIDE_SPACER | Flags::HIDDEN) {
+                    let w = if cell.flags.contains(Flags::WIDE) { m.width * 2.0 } else { m.width };
+                    push_decorations(&mut overlay, cell, palette, fg, [x, y, w], &m);
+                }
+            }
+
+            // Text, in runs of same-style cells so ligatures can form.
+            let cells = &line.cells;
+            let mut col = 0;
+            while col < cells.len() {
+                let cell = &cells[col];
+                if cell.flags.intersects(Flags::WIDE_SPACER | Flags::HIDDEN) || cell.is_empty() {
+                    col += 1;
+                    continue;
+                }
+                if boxdraw::is_procedural(cell.c) && cell.extra.is_none() {
+                    match self.fonts.procedural(&self.queue, &mut self.atlas, cell.c) {
+                        Ok(Some(piece)) => {
+                            overlay.push(glyph_instance(&piece, pad + col as f32 * m.width, y + m.baseline, fg_colors[col]))
+                        }
+                        Ok(None) => {}
+                        Err(AtlasFull) => return false,
+                    }
+                    col += 1;
+                    continue;
+                }
+
+                let style = cell.flags & (Flags::BOLD | Flags::ITALIC);
+                let mut text = String::new();
+                // (byte offset in `text`, column) for every cell in the run.
+                let mut columns = Vec::new();
+                let mut end = col;
+                while end < cells.len() {
+                    let c = &cells[end];
+                    if c.flags.contains(Flags::WIDE_SPACER) {
+                        end += 1;
+                        continue;
+                    }
+                    let joins = c.flags & (Flags::BOLD | Flags::ITALIC) == style
+                        && !c.flags.contains(Flags::HIDDEN)
+                        && !c.is_empty()
+                        && !(boxdraw::is_procedural(c.c) && c.extra.is_none());
+                    if !joins || (end > col && !self.fonts.ligatures()) {
+                        break;
+                    }
+                    columns.push((text.len(), end));
+                    text.push(c.c);
+                    if let Some(extra) = &c.extra {
+                        text.push_str(extra);
+                    }
+                    end += 1;
+                }
+
+                let glyphs = self.fonts.shape(&text, style.contains(Flags::BOLD), style.contains(Flags::ITALIC));
+                for glyph in glyphs.iter() {
+                    let slot = columns.partition_point(|&(byte, _)| byte <= glyph.cluster).saturating_sub(1);
+                    let glyph_col = columns[slot].1;
+                    let piece = match self.fonts.raster(&self.queue, &mut self.atlas, glyph.key) {
+                        Ok(Some(piece)) => piece,
+                        Ok(None) => continue,
+                        Err(AtlasFull) => return false,
+                    };
+                    let x = pad + glyph_col as f32 * m.width + glyph.dx as f32;
+                    let baseline = y + m.baseline + glyph.dy as f32;
+                    overlay.push(glyph_instance(&piece, x, baseline, fg_colors[glyph_col]));
+                }
+                col = end;
+            }
+        }
+        out.append(&mut overlay);
+
+        // Cursor shapes that sit on top of the text.
+        if let Some(c) = cursor {
+            let x = pad + c.col as f32 * m.width;
+            let y = pad + c.row as f32 * m.height;
+            let w = if c.wide { m.width * 2.0 } else { m.width };
+            let color = palette.cursor;
+            if !frame.focused {
+                // Hollow block when the window isn't focused.
+                out.push(solid([x, y, w, CURSOR_LINE], color, 1.0));
+                out.push(solid([x, y + m.height - CURSOR_LINE, w, CURSOR_LINE], color, 1.0));
+                out.push(solid([x, y, CURSOR_LINE, m.height], color, 1.0));
+                out.push(solid([x + w - CURSOR_LINE, y, CURSOR_LINE, m.height], color, 1.0));
+            } else {
+                match cursor_shape {
+                    CursorShape::Block => {}
+                    CursorShape::Beam => out.push(solid([x, y, CURSOR_LINE, m.height], color, 1.0)),
+                    CursorShape::Underline => {
+                        out.push(solid([x, y + m.height - CURSOR_LINE, w, CURSOR_LINE], color, 1.0))
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+fn glyph_instance(piece: &GlyphPiece, x: f32, baseline: f32, color: Rgb) -> Instance {
+    let r = piece.region;
+    Instance {
+        rect: [x + piece.left, baseline - piece.top, r.width as f32, r.height as f32],
+        uv: [r.x as f32, r.y as f32, r.width as f32, r.height as f32],
+        color: rgba(color, 1.0),
+        kind: if piece.is_color { KIND_COLOR } else { KIND_MASK },
+        _pad: [0; 3],
+    }
+}
+
+/// Resolves a cell's foreground and (non-default) background.
+fn cell_colors(cell: &Cell, palette: &Palette) -> (Rgb, Option<Rgb>) {
+    let mut fg_color = cell.fg;
+    // Bold text in one of the 8 base colours uses its bright variant.
+    if cell.flags.contains(Flags::BOLD)
+        && let ionterm_vt::Color::Indexed(i @ 0..=7) = fg_color
+    {
+        fg_color = ionterm_vt::Color::Indexed(i + 8);
+    }
+    let mut fg = palette.resolve(fg_color, palette.foreground);
+    let mut bg = match cell.bg {
+        ionterm_vt::Color::Default => None,
+        other => Some(palette.resolve(other, palette.background)),
+    };
+    if cell.flags.contains(Flags::INVERSE) {
+        let old_fg = fg;
+        fg = bg.unwrap_or(palette.background);
+        bg = Some(old_fg);
+    }
+    if cell.flags.contains(Flags::DIM) {
+        fg = mix(fg, bg.unwrap_or(palette.background), 0.4);
+    }
+    (fg, bg)
+}
+
+fn push_decorations(out: &mut Vec<Instance>, cell: &Cell, palette: &Palette, fg: Rgb, [x, y, w]: [f32; 3], m: &CellMetrics) {
+    let underline_color = match cell.underline_color {
+        ionterm_vt::Color::Default => fg,
+        other => palette.resolve(other, fg),
+    };
+    let thickness = m.underline_thickness;
+    let underline_y = y + m.baseline + m.underline_offset;
+    let flags = cell.flags;
+    if flags.contains(Flags::UNDERLINE) {
+        out.push(solid([x, underline_y, w, thickness], underline_color, 1.0));
+    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        out.push(solid([x, underline_y, w, thickness], underline_color, 1.0));
+        out.push(solid([x, underline_y + thickness * 2.0, w, thickness], underline_color, 1.0));
+    } else if flags.contains(Flags::CURLY_UNDERLINE) {
+        // A stepped wave: two segments per cell, alternating height.
+        let half = (w / 2.0).floor();
+        out.push(solid([x, underline_y, half, thickness], underline_color, 1.0));
+        out.push(solid([x + half, underline_y + thickness, w - half, thickness], underline_color, 1.0));
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        let mut dx = 0.0;
+        while dx < w {
+            out.push(solid([x + dx, underline_y, thickness, thickness], underline_color, 1.0));
+            dx += thickness * 2.0;
+        }
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        let dash = (w / 3.0).ceil();
+        out.push(solid([x, underline_y, dash, thickness], underline_color, 1.0));
+        out.push(solid([x + dash * 2.0, underline_y, w - dash * 2.0, thickness], underline_color, 1.0));
+    }
+    if flags.contains(Flags::STRIKE) {
+        let strike_y = y + m.baseline - m.strikeout_offset - thickness / 2.0;
+        out.push(solid([x, strike_y.round(), w, thickness], fg, 1.0));
+    }
+}
+
+fn solid(rect: [f32; 4], color: Rgb, alpha: f32) -> Instance {
+    Instance {
+        rect,
+        uv: [0.0; 4],
+        color: rgba(color, alpha),
+        kind: KIND_SOLID,
+        _pad: [0; 3],
+    }
+}
+
+fn rgba(c: Rgb, alpha: f32) -> [f32; 4] {
+    [f32::from(c.r) / 255.0, f32::from(c.g) / 255.0, f32::from(c.b) / 255.0, alpha]
+}
+
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let lerp = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
+    Rgb::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
+}
+
+fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("instances"),
+        size: (capacity * std::mem::size_of::<Instance>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    atlas: &Atlas,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ionterm bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&atlas.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}

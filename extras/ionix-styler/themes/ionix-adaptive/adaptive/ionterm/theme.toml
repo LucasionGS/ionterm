@@ -1,0 +1,35 @@
+# ionterm theme, generated from kitty/kitty.conf
+foreground = "{{textBright}}"
+background = "{{bgDeep}}"
+background_opacity = 0.92
+cursor = "{{accent}}"
+cursor_text = "{{bgDeep}}"
+selection_foreground = "{{bgDeep}}"
+selection_background = "{{accent}}"
+url = "{{accentBright}}"
+
+[tab_bar]
+active_foreground = "{{bgDeep}}"
+active_background = "{{accent}}"
+inactive_foreground = "{{text}}"
+inactive_background = "{{bgWindow}}"
+
+[palette]
+colors = [
+  "{{ansi0}}",
+  "{{ansi1}}",
+  "{{ansi2}}",
+  "{{ansi3}}",
+  "{{ansi4}}",
+  "{{ansi5}}",
+  "{{ansi6}}",
+  "{{ansi7}}",
+  "{{ansi8}}",
+  "{{ansi9}}",
+  "{{ansi10}}",
+  "{{ansi11}}",
+  "{{ansi12}}",
+  "{{ansi13}}",
+  "{{ansi14}}",
+  "{{ansi15}}",
+]

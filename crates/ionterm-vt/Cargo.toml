@@ -1,0 +1,13 @@
+[package]
+name = "ionterm-vt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitflags = "2.13.2"
+tracing = "0.1.44"
+unicode-width = "0.2.2"
+vte = "0.15.0"

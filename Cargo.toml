@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/ionterm-vt", "crates/ionterm-render", "crates/ionterm"]
+default-members = ["crates/ionterm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Lucasion"]
+license = "MIT"
+repository = "https://github.com/LucasionGS/ionterm"

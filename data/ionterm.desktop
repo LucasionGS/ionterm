@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ionterm
+GenericName=Terminal
+Comment=GPU-rendered terminal emulator
+Exec=ionterm
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;prompt;command;commandline;
+StartupWMClass=ionterm

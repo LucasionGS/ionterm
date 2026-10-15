@@ -1,0 +1,172 @@
+# ionterm: plan and architecture
+
+A GPU-rendered terminal emulator in the spirit of kitty: fast, good inline graphics, useful built-in features, and themed by the Ionix styler like the rest of the Ionix desktop. Wayland first, and Windows compiles from day one.
+
+## Decisions
+
+| Area | Decision |
+|---|---|
+| Language | Rust (edition 2024), standard rustfmt style like ioexplorer |
+| Windowing | `winit`: native Wayland (plus X11 for free) and Win32 |
+| Rendering | `wgpu`: Vulkan on Linux, DX12 on Windows |
+| Fonts | `cosmic-text` for discovery, fallback, shaping (ligatures) and rasterisation. Box-drawing, block and Powerline glyphs are drawn procedurally so they line up exactly |
+| VT parsing | `vte` crate for the state machine; our own `Perform` implementation and grid |
+| PTY | `portable-pty`: openpty on Unix, ConPTY on Windows |
+| Config | TOML: `~/.config/ionterm/ionterm.toml` (user) + `theme.toml` (owned by the Ionix styler), live-reloaded |
+| Graphics | Kitty graphics protocol (full, including unicode placeholders) and Sixel |
+| Multiplexing | Built-in tabs, splits and layouts (kitty-style) |
+| Chrome | Configurable: `decorations = "auto" \| "none" \| "full"`. `auto` = none on Wayland tiling, our own titlebar on Windows. Tab bar drawn by the GPU, hidden with a single tab |
+| Keybindings | kitty-like defaults (`ctrl+shift+…`), fully remappable |
+| Distribution | `ionterm-git` PKGBUILD / AUR; later the default terminal in the Ionix ISO |
+| TERM | `xterm-ionterm` terminfo with a smart SSH fallback (see below) |
+
+## Workspace layout
+
+```
+crates/
+  ionterm-vt/       Terminal state: parser glue, grid, scrollback, modes, SGR, OSC,
+                    kitty keyboard flags, graphics store. Pure logic, no I/O, no GPU.
+  ionterm-render/   wgpu renderer: glyph atlas, cell/background/cursor pipelines,
+                    procedural glyphs, image layers, tab bar.
+  ionterm/          The app binary: winit event loop, windows/tabs/splits, PTY,
+                    config + theme + live reload, input encoding, clipboard.
+extras/
+  terminfo/         ionterm.terminfo source (xterm-ionterm)
+  shell-integration/ fish / bash / zsh scripts (OSC 133, OSC 7, ssh wrapper)
+  ionix-styler/     theme templates + install functions to upstream into the Ionix repo
+docs/
+```
+
+`ionterm-vt` stays independent of the renderer and the windowing layer, so it can be tested without a display and reused, for example by a headless `ionterm +replay` debugging tool.
+
+## Runtime model
+
+```
+           ┌───────────── PTY reader thread (per pane) ─────────────┐
+ child ──▶ │ read() → vte::Parser → Term (behind Mutex) → wake proxy │
+           └────────────────────────────────────────────────────────┘
+                                                      │ UserEvent::Wakeup
+ winit main thread ◀──────────────────────────────────┘
+   • input → encode → PTY writer
+   • on redraw: lock Term, snapshot visible rows, unlock, render with wgpu
+   • config watcher (notify) → UserEvent::ConfigChanged → re-theme
+```
+
+- Each pane owns a `Term` behind a `Mutex`. The reader thread parses straight into it and only signals the main thread, coalescing wakeups, so floods like `cat bigfile` don't queue thousands of redraws.
+- Replies the terminal must send back (DSR, DA, XTGETTCAP, kitty queries) collect in `Term`'s outgoing buffer, which the reader thread writes to the PTY.
+- Rendering snapshots only the visible rows under the lock, so the parser is never blocked by GPU work.
+
+## Theming and Ionix integration
+
+ionterm joins the Ionix styler the same way kitty and ioexplorer do:
+
+1. Each theme gets a `ionterm/theme.toml` section: a static file, plus `adaptive/ionterm/theme.toml` with `{{slot}}` tokens for adaptive themes.
+2. `install-default` gets `ionix_install_ionterm` / `ionix_uninstall_ionterm`, which symlink the file to `~/.config/ionterm/theme.toml`.
+3. ionterm watches **the directory** `~/.config/ionterm/`, not the file, because the styler swaps the symlink rather than editing it. It reloads within about 250 ms, so no signal is needed.
+4. With no `theme.toml`, ionterm falls back to built-in Ionix defaults (the `Theme.qml` palette).
+
+`theme.toml` shape (the adaptive template maps the palette slots):
+
+```toml
+foreground = "{{textBright}}"
+background = "{{bgDeep}}"
+background_opacity = 0.92
+cursor = "{{accent}}"
+cursor_text = "{{bgDeep}}"
+selection_foreground = "{{bgDeep}}"
+selection_background = "{{accent}}"
+url = "{{accentBright}}"
+
+[tab_bar]
+background = "{{bgDeep}}"
+active_foreground = "{{bgDeep}}"
+active_background = "{{accent}}"
+inactive_foreground = "{{text}}"
+inactive_background = "{{bgWindow}}"
+
+[palette]
+colors = ["{{ansi0}}", "{{ansi1}}", …, "{{ansi15}}"]
+```
+
+The templates and install functions start in `extras/ionix-styler/` and move into the Ionix repo when ionterm becomes the default terminal.
+
+## TERM, terminfo and SSH
+
+kitty's "unknown terminal: xterm-kitty" happens because `TERM` is forwarded over SSH but the remote host has no terminfo entry for it. ionterm handles that in layers:
+
+1. **Locally**, `TERM=xterm-ionterm` if the entry is installed (the package ships it to `/usr/share/terminfo`), otherwise `xterm-256color`. It also sets `COLORTERM=truecolor`, `TERM_PROGRAM=ionterm` and `TERM_PROGRAM_VERSION`.
+2. **Over SSH**, the shell integration wraps `ssh`. On the first connection to a host it tries `infocmp -x xterm-ionterm | ssh host 'tic -x -'` and caches whether that worked in `~/.cache/ionterm/ssh-terminfo`. If it worked, TERM stays `xterm-ionterm`. Otherwise the session uses `TERM=xterm-256color`.
+3. **Feature detection doesn't depend on TERM.** ionterm answers XTGETTCAP, DA1/DA2/XTVERSION, the kitty keyboard query (`CSI ? u`) and kitty graphics queries. Modern apps (neovim, yazi, helix) probe these directly, so nothing is lost even under `xterm-256color`.
+4. The `xterm-ionterm` entry builds on `xterm-256color` and adds truecolor (`Tc`/`RGB`), styled and coloured underlines (`Smulx`, `Setulc`), synchronized output (`Sync`), bracketed paste, focus events, cursor shapes (`Ss`/`Se`) and OSC 52 (`Ms`).
+
+## Configuration (`ionterm.toml`)
+
+```toml
+[font]
+family = "JetBrainsMono Nerd Font"
+size = 11.0
+ligatures = true
+
+[window]
+padding = 8
+decorations = "auto"          # auto | none | full
+opacity = 0.92                # overrides theme when set
+
+[terminal]
+scrollback_lines = 10000
+shell = ""                    # empty = $SHELL / passwd entry; cmd/pwsh on Windows
+
+[cursor]
+shape = "beam"                # block | beam | underline
+blink_interval = 0.5          # seconds, 0 disables
+
+[keybindings]
+"ctrl+shift+c" = "copy"
+"ctrl+shift+v" = "paste"
+"ctrl+shift+t" = "new_tab"
+"ctrl+shift+enter" = "split"
+"ctrl+shift+e" = "hints"
+```
+
+Every key has a default, so ionterm runs with no config at all.
+
+## Roadmap
+
+### v0.1: daily-drivable core
+- [x] Workspace, CI (Linux + Windows build), PKGBUILD skeleton
+- [x] winit window + wgpu surface with transparency
+- [x] PTY spawn (portable-pty), reader thread, resize (TIOCSWINSZ / ConPTY resize)
+- [x] VT core: cursor movement, erase, insert/delete, scroll regions, SGR (256 + truecolor), alternate screen, DEC modes, tabs, OSC 0/2 titles
+- [x] Grid renderer: glyph atlas, backgrounds, cursor shapes, bold/italic, underline styles, strikethrough
+- [x] TOML config + theme.toml with built-in Ionix defaults
+- [x] Ligatures (run-based shaping) and procedural box-drawing / block / Powerline glyphs
+- [x] Scrollback viewing (mouse wheel, shift+pgup/pgdn)
+- [x] Selection (mouse, word/line), clipboard (Wayland data-control + primary)
+- [x] Mouse reporting (X10/normal/button/any, SGR 1006, urxvt)
+- [x] Bracketed paste, focus events, synchronized output (mode 2026)
+- [x] Kitty keyboard protocol (all flags)
+- [x] Live reload of config + theme (directory watch)
+- [x] OSC 4/10/11/12/104/110–112 colour set and query, OSC 52 clipboard (write only)
+- [x] Device replies: DA1/DA2, DSR/CPR, XTVERSION, XTGETTCAP, DECRQM, DECRQSS
+- [x] xterm-ionterm terminfo source (installed in v0.3 together with the SSH wrapper)
+- [ ] OSC 8 hyperlinks (parse, underline on hover, ctrl+click to open)
+- [ ] Reflow on resize (currently lines are cut or padded)
+- [ ] Interactive testing of the kitty keyboard protocol against nvim / helix / fish
+- [ ] Selection auto-scroll while dragging past the edge
+
+### v0.2: multiplexing and graphics
+- Tabs + GPU tab bar (powerline/slanted/rounded styles), splits, layouts (tall, fat, grid, stack)
+- Kitty graphics protocol: transmission (direct, file, temp file, shm), placements, z-index, deletion, animation, unicode placeholders
+- Sixel
+
+### v0.3: power features
+- Shell integration (fish/bash/zsh): OSC 133 prompt marks, jump between prompts, select command output, OSC 7 cwd for new tabs/splits
+- SSH wrapper with terminfo install and fallback
+- Hints mode (URLs, paths, hashes, `file:line`)
+- Scrollback search (plain + regex, highlighted matches)
+- Background image/opacity, cursor trail
+
+### v0.4: Ionix and Windows
+- Styler section upstreamed into the Ionix repo; ionterm replaces kitty in the ISO, Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab
+- Windows polish: own titlebar, DirectWrite font fallback check, installer/zip release
+- Optional: `ionterm @` remote control over a Unix socket / named pipe

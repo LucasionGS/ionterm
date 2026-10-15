@@ -1,0 +1,22 @@
+[package]
+name = "ionterm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+dirs = "7.0.0"
+ionterm-render = { version = "0.1.0", path = "../ionterm-render" }
+ionterm-vt = { version = "0.1.0", path = "../ionterm-vt" }
+notify = "8.2.0"
+pollster = "1.0.1"
+portable-pty = "0.9.0"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+winit = "0.30.13"

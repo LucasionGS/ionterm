@@ -1,0 +1,18 @@
+# Terminfo entry for ionterm. Compile and install with:
+#   tic -x -o ~/.terminfo extras/terminfo/ionterm.terminfo      (current user)
+#   sudo tic -x -o /usr/share/terminfo extras/terminfo/ionterm.terminfo
+#
+# Builds on xterm-256color and adds what ionterm does beyond it. Capabilities
+# listed before `use=` take precedence over the inherited ones.
+xterm-ionterm|ionterm GPU terminal emulator,
+	am, bce, ccc, mc5i, mir, msgr, npc, xenl, XT, Tc, Su, AX,
+	colors#256, cols#80, it#8, lines#24, pairs#0x10000,
+	BD=\E[?2004l, BE=\E[?2004h, PE=\E[201~, PS=\E[200~,
+	Ms=\E]52;%p1%s;%p2%s\007,
+	Se=\E[2 q, Ss=\E[%p1%d q,
+	Setulc=\E[58\:2\:\:%p1%{65536}%/%d\:%p1%{256}%/%{255}%&%d\:%p1%{255}%&%d%;m,
+	Smulx=\E[4\:%p1%dm,
+	Sync=\E[?2026%?%p1%{1}%-%tl%eh%;,
+	fd=\E[?1004l, fe=\E[?1004h, kxIN=\E[I, kxOUT=\E[O,
+	rep=%p1%c\E[%p2%{1}%-%db,
+	use=xterm-256color,
