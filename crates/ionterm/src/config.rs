@@ -103,6 +103,9 @@ pub struct TerminalConfig {
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
+    /// Host alias from `ionterm ssh <host>`: the first tab connects to it.
+    #[serde(skip)]
+    pub startup_ssh: Option<String>,
 }
 
 impl Default for TerminalConfig {
@@ -114,6 +117,7 @@ impl Default for TerminalConfig {
             wheel_scroll_lines: 3,
             advertise_sixel: false,
             command: Vec::new(),
+            startup_ssh: None,
         }
     }
 }

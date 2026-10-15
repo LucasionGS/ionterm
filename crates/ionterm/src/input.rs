@@ -494,6 +494,8 @@ pub enum Action {
     /// 1-based.
     GotoTab(usize),
     RenameTab,
+    /// Opens the SSH connection picker.
+    SshConnect,
     // Panes
     /// Splits the active pane along its longer side.
     NewSplit,
@@ -547,6 +549,7 @@ impl Action {
             "move_tab_forward" => Self::MoveTabForward,
             "move_tab_backward" => Self::MoveTabBackward,
             "rename_tab" | "set_tab_title" => Self::RenameTab,
+            "ssh_connect" | "connect_ssh" => Self::SshConnect,
             "new_split" | "new_window" => Self::NewSplit,
             "split_right" => Self::SplitRight,
             "split_down" => Self::SplitDown,
@@ -594,6 +597,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+period", "move_tab_forward"),
     ("ctrl+shift+comma", "move_tab_backward"),
     ("ctrl+shift+alt+t", "rename_tab"),
+    ("ctrl+shift+s", "ssh_connect"),
     ("alt+1", "goto_tab 1"),
     ("alt+2", "goto_tab 2"),
     ("alt+3", "goto_tab 3"),

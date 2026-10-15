@@ -26,6 +26,8 @@ pub enum Hit {
     Tab(usize),
     Close(usize),
     NewTab,
+    /// The `⌄` beside `+`: the connection picker.
+    Dropdown,
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +45,7 @@ pub struct BarLayout {
     pub bar: Rect,
     pub tabs: Vec<TabSlot>,
     pub new_tab: Option<Rect>,
+    pub dropdown: Option<Rect>,
 }
 
 /// The rename in progress, drawn in place of a tab's title.
@@ -73,7 +76,8 @@ fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout
     let height = bar.height - top;
     let y = bar.y + top;
     let button = height;
-    let available = bar.width - 2.0 * side - button - gap;
+    let dropdown_width = (button * 0.7).round();
+    let available = bar.width - 2.0 * side - button - dropdown_width - gap;
     let max_width = m.width * 30.0;
     let min_width = m.width * 8.0;
     let width = (available / count.max(1) as f32 - gap).clamp(min_width, max_width).floor();
@@ -104,10 +108,12 @@ fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout
         })
         .collect::<Vec<_>>();
     let after = tabs.last().map_or(bar.x + side, |t| t.rect.x + t.rect.width + gap);
+    let new_tab = Rect::new(after, y + px(2.0), button - px(4.0), button - px(4.0));
     BarLayout {
         bar,
         tabs,
-        new_tab: Some(Rect::new(after, y + px(2.0), button - px(4.0), button - px(4.0))),
+        new_tab: Some(new_tab),
+        dropdown: Some(Rect::new(new_tab.x + new_tab.width, new_tab.y, dropdown_width, new_tab.height)),
     }
 }
 
@@ -135,6 +141,7 @@ fn layout_powerline(bar: Rect, tabs: &[TabInfo], m: CellMetrics, max_title: usiz
         bar,
         tabs: slots,
         new_tab: None,
+        dropdown: None,
     }
 }
 
@@ -182,6 +189,9 @@ pub fn hit(layout: &BarLayout, x: f32, y: f32) -> Hit {
     }
     if layout.new_tab.is_some_and(|r| r.contains(x, y)) {
         return Hit::NewTab;
+    }
+    if layout.dropdown.is_some_and(|r| r.contains(x, y)) {
+        return Hit::Dropdown;
     }
     for (i, slot) in layout.tabs.iter().enumerate() {
         if slot.close.is_some_and(|r| r.contains(x, y)) {
@@ -363,6 +373,24 @@ fn draw_tabs(
             x: button.x + ((button.width - m.width) / 2.0).round(),
             y: button.y + ((button.height - m.height) / 2.0).round(),
             color: if hover == Hit::NewTab { foreground } else { muted },
+            bold: false,
+        });
+    }
+    if let Some(button) = layout.dropdown {
+        if hover == Hit::Dropdown {
+            out.push(ChromeItem::RoundedRect {
+                rect: [button.x, button.y, button.width, button.height],
+                radius: (5.0 * scale).round(),
+                top_only: false,
+                color: hover_bg,
+                alpha: 1.0,
+            });
+        }
+        out.push(ChromeItem::Text {
+            text: "\u{F078}".into(),
+            x: button.x + ((button.width - m.width) / 2.0).round(),
+            y: button.y + ((button.height - m.height) / 2.0).round(),
+            color: if hover == Hit::Dropdown { foreground } else { muted },
             bold: false,
         });
     }

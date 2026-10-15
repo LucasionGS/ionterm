@@ -164,7 +164,30 @@ Every key has a default, so ionterm runs with no config at all.
 - [ ] Kitty graphics animation (`a=f`, `a=a`, `a=c`) and relative placements (`P`, `Q`)
 - [x] Sixel: streaming decoder (RGB/HLS colours, repeats, raster attributes, transparent or filled background), shown through the same image path as kitty graphics; DECSDM (mode 80), XTSMGRAPHICS; announced in DA1 only with `advertise_sixel`
 
-### v0.3: power features
+### v0.3: first-class SSH (Tabby-style)
+
+Engine: the system's OpenSSH (`ssh`, `sftp`), so the user's whole ssh config, agent and keys apply. On Unix, connections share one master connection (`ControlMaster`), so new tabs and file transfers don't log in again. Windows' OpenSSH lacks connection sharing; there, each one connects on its own.
+
+Phase 1: connecting
+- [x] Hosts from `~/.ssh/config` (following `Include`), with ionterm extras (colour, icon, group) in `~/.config/ionterm/hosts.toml`
+- [x] "Connect SSH" palette (`ctrl+shift+s`): fuzzy search, Enter connects in a new tab
+- [x] `⌄` button next to `+` in the tab bar, opening the same picker
+- [x] `ionterm ssh <host>` on the command line
+- [x] Remote bootstrap on connect: install the `xterm-ionterm` terminfo (or fall back to `xterm-256color`), and a session-only OSC 7 hook for fish/bash/zsh so ionterm knows the remote directory. Nothing else is written to the server.
+- [x] "Duplicate tab" on an SSH tab connects to the same host (new tabs and splits stay local)
+- [x] Disconnect banner with Enter to reconnect, instead of closing the tab
+- [x] Per-host tab colour and icon
+- [x] Typed `ssh` detection: SSH icon and host in the tab, duplicate re-runs the command
+
+Phase 2: managing connections
+- [ ] "New connection…" / edit form (alias, host, user, port, key, jump host, colour, icon, group), saved to `~/.ssh/config.d/ionterm`, included from `~/.ssh/config`
+
+Phase 3: files
+- [ ] SFTP side panel: browse, upload, download, rename, delete, new folder, progress
+- [ ] Drag and drop files onto an SSH tab to upload to the shell's remote directory
+- [ ] ZMODEM (`sz`/`rz`) when the server has lrzsz, with SFTP as the fallback
+
+### v0.3b: other power features
 - Shell integration (fish/bash/zsh): jump between prompts (OSC 133 marks are already tracked), select command output, OSC 7 cwd for new tabs/splits
 - SSH wrapper with terminfo install and fallback
 - Hints mode (URLs, paths, hashes, `file:line`)

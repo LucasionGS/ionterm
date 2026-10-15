@@ -6,8 +6,10 @@ mod input;
 mod layout;
 mod links;
 mod menu;
+mod palette;
 mod pane;
 mod pty;
+mod ssh;
 mod tab;
 mod tabbar;
 mod theme;
@@ -24,7 +26,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn print_help() {
     println!("ionterm {VERSION}: a GPU-rendered terminal emulator\n");
-    println!("Usage: ionterm [options] [-e <command> [args...]]\n");
+    println!("Usage: ionterm [options] [-e <command> [args...]]");
+    println!("       ionterm ssh <host>       Open a window connected to an ssh config host\n");
     println!("Options:");
     println!("  -e, --exec <command>   Run <command> instead of the shell (takes the rest of the line)");
     println!("  -h, --help             Show this help");
@@ -50,6 +53,13 @@ fn main() -> ExitCode {
             "-v" | "--version" | "version" => {
                 println!("ionterm {VERSION}");
                 return ExitCode::SUCCESS;
+            }
+            "ssh" => {
+                let Some(host) = args.next() else {
+                    eprintln!("Missing host. Usage: ionterm ssh <host>");
+                    return ExitCode::from(2);
+                };
+                config.terminal.startup_ssh = Some(host);
             }
             "-e" | "--exec" => {
                 config.terminal.command = args.by_ref().collect();

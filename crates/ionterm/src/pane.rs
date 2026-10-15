@@ -15,7 +15,8 @@ use crate::config::TerminalConfig;
 use crate::input::MouseButton;
 use crate::layout::{PaneId, Rect};
 use crate::links::{self, Link, LinkKind};
-use crate::pty::Pty;
+use crate::pty::{OutputSink, Pty};
+use crate::ssh::{Connection, DetectedSsh, detect};
 
 /// One line per tick while a selection is dragged past the top or bottom.
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(40);
@@ -51,6 +52,15 @@ pub struct Pane {
     pub title: String,
     /// From OSC 7, as a path.
     pub cwd: Option<PathBuf>,
+    /// The remote shell's directory, from OSC 7 sent by another host.
+    pub remote_cwd: Option<String>,
+    /// Set when ionterm opened this pane as an SSH connection.
+    pub connection: Option<Connection>,
+    /// An `ssh` the user typed, recognised from the foreground process.
+    pub detected_ssh: Option<DetectedSsh>,
+    /// The exit code of a connection that ended badly, while the pane offers
+    /// to reconnect.
+    pub disconnected: Option<u32>,
     pub sync_deadline: Option<Instant>,
     pub held_button: Option<MouseButton>,
     pub selecting: bool,
@@ -70,6 +80,7 @@ impl Pane {
     pub fn spawn(
         id: PaneId,
         config: &TerminalConfig,
+        connection: Option<Connection>,
         cwd: Option<PathBuf>,
         palette: Palette,
         metrics: CellMetrics,
@@ -83,13 +94,16 @@ impl Pane {
         let term = Arc::new(Mutex::new(term));
         let wakeup_pending = Arc::new(AtomicBool::new(false));
         let pty = Pty::spawn(
-            id,
             config,
+            connection.as_ref().map(|c| c.argv.as_slice()),
             cwd.as_deref(),
             pty_size(cols, rows, metrics),
-            term.clone(),
-            proxy,
-            wakeup_pending.clone(),
+            OutputSink {
+                pane: id,
+                term: term.clone(),
+                proxy,
+                wakeup_pending: wakeup_pending.clone(),
+            },
         )?;
         Ok(Self {
             id,
@@ -101,6 +115,10 @@ impl Pane {
             grid: (cols, rows),
             title: String::new(),
             cwd,
+            remote_cwd: None,
+            connection,
+            detected_ssh: None,
+            disconnected: None,
             sync_deadline: None,
             held_button: None,
             selecting: false,
@@ -130,14 +148,82 @@ impl Pane {
         }
         self.process_checked = Some(now);
         let process = self.pty.foreground_process();
-        let changed = process != self.process;
+        let mut changed = process != self.process;
+        // A typed `ssh`: remember where it went, for the tab and duplicating.
+        if changed && self.connection.is_none() {
+            let detected = (process.as_deref() == Some("ssh"))
+                .then(|| self.pty.foreground_pid())
+                .flatten()
+                .and_then(detect::process_argv)
+                .and_then(|argv| detect::parse_ssh_argv(&argv));
+            changed |= detected != self.detected_ssh;
+            self.detected_ssh = detected;
+        }
         self.process = process;
         changed
+    }
+
+    /// Whether a just-exited pane should stay open offering to reconnect:
+    /// connections ionterm opened that ended with an error. Writes the
+    /// banner when so.
+    pub fn check_disconnect(&mut self) -> bool {
+        let Some(connection) = &self.connection else { return false };
+        let code = self.pty.exit_code();
+        if code.is_none_or(|c| c == 0) {
+            return false;
+        }
+        let code = code.unwrap_or_default();
+        let banner = format!(
+            "\r\n\x1b[0m\x1b[7m Disconnected from {} (exit {code}) \x1b[0m Press Enter to reconnect, or ctrl+shift+w to close.\r\n",
+            connection.alias
+        );
+        {
+            let mut term = self.lock();
+            term.reset_modes();
+            ionterm_vt::Processor::new().advance(&mut term, banner.as_bytes());
+        }
+        self.disconnected = Some(code);
+        true
+    }
+
+    /// Opens a disconnected pane's connection again, in the same terminal.
+    pub fn reconnect(&mut self, config: &TerminalConfig, metrics: CellMetrics, proxy: EventLoopProxy<UserEvent>) -> anyhow::Result<()> {
+        let Some(connection) = self.connection.clone() else { return Ok(()) };
+        self.lock().scroll_to_bottom();
+        self.pty = Pty::spawn(
+            config,
+            Some(&connection.argv),
+            None,
+            pty_size(self.grid.0, self.grid.1, metrics),
+            OutputSink {
+                pane: self.id,
+                term: self.term.clone(),
+                proxy,
+                wakeup_pending: self.wakeup_pending.clone(),
+            },
+        )?;
+        self.disconnected = None;
+        Ok(())
     }
 
     /// The directory a new pane opened from this one should start in.
     pub fn working_dir(&self) -> Option<PathBuf> {
         self.pty.current_dir().or_else(|| self.cwd.clone())
+    }
+
+    /// Records an OSC 7 report: local paths and remote ones are kept apart,
+    /// so a remote directory never becomes a local tab's starting point.
+    pub fn report_cwd(&mut self, url: &str, local_host: &str) {
+        let host = url
+            .strip_prefix("file://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or_default();
+        let Some(path) = path_from_file_url(url) else { return };
+        if host.is_empty() || host == "localhost" || host.eq_ignore_ascii_case(local_host) {
+            self.cwd = Some(path);
+        } else {
+            self.remote_cwd = Some(path.to_string_lossy().into_owned());
+        }
     }
 
     /// Moves the pane to `area` and sizes its grid to fit, telling the

@@ -24,7 +24,9 @@ use crate::input::{self, Action, KeyCombo, MouseAction, MouseButton};
 use crate::layout::{self, Direction, PaneId, Rect};
 use crate::links;
 use crate::menu::{self, Menu, MenuCommand};
-use crate::pane::{self, Pane, SelectionKind, SelectionState};
+use crate::palette::{self, Palette, PaletteAction, PaletteItem};
+use crate::ssh::{self, Connection, HostExtras};
+use crate::pane::{Pane, SelectionKind, SelectionState};
 use crate::tab::Tab;
 use crate::tabbar::{self, Hit, TabInfo};
 use crate::theme::Theme;
@@ -37,6 +39,8 @@ const MULTI_CLICK: Duration = Duration::from_millis(400);
 const MIN_FONT_SIZE: f32 = 4.0;
 /// Share of a split that one resize action moves its boundary.
 const RESIZE_STEP: f32 = 0.05;
+/// The tab icon for SSH sessions without one of their own.
+const SSH_ICON: char = '\u{F233}';
 /// How far a tab must be dragged, in logical pixels, before it moves.
 const TAB_DRAG_THRESHOLD: f64 = 6.0;
 /// How quickly tabs glide to their slots (per second); higher is snappier.
@@ -62,6 +66,8 @@ pub struct App {
     next_pane_id: PaneId,
     /// Set when the last tab closes; the event loop exits on its next pass.
     exit_requested: bool,
+    /// This machine's name, to tell remote directory reports from local ones.
+    local_host: String,
     _watcher: Option<notify::RecommendedWatcher>,
     pub error: Option<anyhow::Error>,
 }
@@ -92,6 +98,10 @@ struct TermWindow {
     last_tab_click: Option<(Instant, usize)>,
     /// Where each tab (by id) is drawn, which glides toward its slot.
     tab_positions: HashMap<u64, f32>,
+    /// The connection picker, while open.
+    palette: Option<Palette>,
+    /// Per-host colours and icons from `hosts.toml`.
+    ssh_extras: HashMap<String, HostExtras>,
     /// When the last animated frame was drawn; `None` when nothing moves.
     last_frame: Option<Instant>,
 }
@@ -113,6 +123,10 @@ struct Rename {
 /// What a tab bar click asks for, run once the window borrow ends.
 enum BarAction {
     NewTab,
+    /// Open the connection picker below this point (its top-right corner).
+    Palette(Option<(f32, f32)>),
+    /// Run a picker entry (in a split when `true`).
+    Run(PaletteAction, bool),
     Close(usize),
     Menu(MenuCommand, usize),
 }
@@ -137,6 +151,7 @@ impl App {
             reload_at: None,
             next_pane_id: 1,
             exit_requested: false,
+            local_host: ssh::local_hostname(),
             _watcher: watcher,
             error: None,
         }
@@ -200,7 +215,8 @@ impl App {
             (f32::from(self.config.window.lines) * m.height + 2.0 * pad) as u32,
         ));
 
-        let pane = self.spawn_pane(m, None)?;
+        let connection = self.config.terminal.startup_ssh.clone().map(|alias| self.connection_for(&alias));
+        let pane = self.spawn_pane(m, connection, None)?;
         let mut w = TermWindow {
             window,
             renderer,
@@ -223,6 +239,8 @@ impl App {
             menu: None,
             last_tab_click: None,
             tab_positions: HashMap::new(),
+            palette: None,
+            ssh_extras: ssh::load_extras(),
             last_frame: None,
         };
         w.relayout(&self.config, false);
@@ -233,10 +251,109 @@ impl App {
         self.config.layouts.enabled.first().copied().unwrap_or_default()
     }
 
-    fn spawn_pane(&mut self, metrics: ionterm_render::CellMetrics, cwd: Option<PathBuf>) -> anyhow::Result<Pane> {
+    fn spawn_pane(
+        &mut self,
+        metrics: ionterm_render::CellMetrics,
+        connection: Option<Connection>,
+        cwd: Option<PathBuf>,
+    ) -> anyhow::Result<Pane> {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
-        Pane::spawn(id, &self.config.terminal, cwd, self.theme.palette(), metrics, self.proxy.clone())
+        Pane::spawn(id, &self.config.terminal, connection, cwd, self.theme.palette(), metrics, self.proxy.clone())
+    }
+
+    /// The command to connect to an ssh config host.
+    fn connection_for(&self, alias: &str) -> Connection {
+        let hosts = ssh::load_hosts();
+        let extras = self.window.as_ref().map_or_else(ssh::load_extras, |w| w.ssh_extras.clone());
+        Connection::new(alias, hosts.iter().find(|h| h.alias == alias), extras.get(alias))
+    }
+
+    /// What duplicating a pane runs: the same SSH connection, or a shell in
+    /// the same directory.
+    fn follow_pane(pane: &Pane) -> (Option<Connection>, Option<PathBuf>) {
+        match &pane.connection {
+            Some(connection) => (Some(connection.clone()), None),
+            None => (None, pane.working_dir()),
+        }
+    }
+
+    /// Opens the connection picker, centred or under the `⌄` button.
+    fn open_palette(&mut self, anchor: Option<(f32, f32)>) {
+        let extras = ssh::load_extras();
+        let items = ssh::load_hosts()
+            .into_iter()
+            .map(|host| {
+                let extra = extras.get(&host.alias);
+                PaletteItem {
+                    title: host.alias.clone(),
+                    detail: host.target(),
+                    group: extra.and_then(|e| e.group.clone()).unwrap_or_default(),
+                    icon: extra.and_then(HostExtras::icon_char).unwrap_or(SSH_ICON),
+                    color: extra.and_then(|e| e.color).map(|c| c.0),
+                    action: PaletteAction::Connect(host.alias),
+                }
+            })
+            .chain([PaletteItem {
+                title: "New connection…".into(),
+                detail: String::new(),
+                group: String::new(),
+                icon: '\u{F067}',
+                color: None,
+                action: PaletteAction::NewConnection,
+            }])
+            .collect();
+        let Some(w) = &mut self.window else { return };
+        w.ssh_extras = extras;
+        w.palette = Some(Palette::new(items, anchor));
+        w.menu = None;
+        w.window.request_redraw();
+    }
+
+    /// Runs the picker's choice: connect in a new tab, or in a split.
+    fn run_palette(&mut self, action: PaletteAction, split: bool) {
+        if let Some(w) = &mut self.window {
+            w.palette = None;
+            w.window.request_redraw();
+        }
+        match action {
+            PaletteAction::Connect(alias) => {
+                let connection = self.connection_for(&alias);
+                if split {
+                    self.split_with(None, Some(connection), None);
+                } else {
+                    let end = self.window.as_ref().map_or(0, |w| w.tabs.len());
+                    self.open_tab(end, Some(connection), None);
+                }
+            }
+            PaletteAction::NewConnection => {
+                tracing::info!("the connection editor arrives in the next phase");
+            }
+        }
+    }
+
+    /// A child exited: connections ionterm opened stay open to reconnect if
+    /// they ended badly; everything else closes.
+    fn child_exited(&mut self, id: PaneId) {
+        let Some(w) = &mut self.window else { return };
+        let Some(pane) = w.tabs.iter_mut().find_map(|t| t.pane_mut(id)) else { return };
+        if pane.check_disconnect() {
+            w.window.request_redraw();
+            return;
+        }
+        self.remove_pane(id);
+    }
+
+    fn reconnect(&mut self) {
+        let proxy = self.proxy.clone();
+        let Some(w) = &mut self.window else { return };
+        let metrics = w.renderer.cell_metrics();
+        let tab = w.active_tab;
+        let pane = w.tabs[tab].active_pane_mut();
+        if let Err(error) = pane.reconnect(&self.config.terminal, metrics, proxy) {
+            tracing::warn!("could not reconnect: {error:#}");
+        }
+        w.window.request_redraw();
     }
 
     fn reload_config(&mut self) {
@@ -270,6 +387,7 @@ impl App {
         }
         w.next_blink = blink.map(|d| Instant::now() + d);
         w.blink_on = true;
+        w.ssh_extras = ssh::load_extras();
         w.relayout(&self.config, true);
     }
 
@@ -344,19 +462,21 @@ impl App {
 
     //#region Tabs and panes
 
+    /// A new tab is always a local shell, even next to an SSH tab; only
+    /// "Duplicate tab" reconnects to the same host.
     fn new_tab(&mut self) {
         let Some(w) = &self.window else { return };
         let cwd = w.active_pane().working_dir();
         let end = w.tabs.len();
-        self.open_tab(end, cwd);
+        self.open_tab(end, None, cwd);
     }
 
-    /// Opens a tab at `index`, starting its shell in `cwd`.
-    fn open_tab(&mut self, index: usize, cwd: Option<PathBuf>) {
+    /// Opens a tab at `index`, running a connection or a shell in `cwd`.
+    fn open_tab(&mut self, index: usize, connection: Option<Connection>, cwd: Option<PathBuf>) {
         let Some(w) = &self.window else { return };
         let metrics = w.renderer.cell_metrics();
         let layout = self.default_layout();
-        match self.spawn_pane(metrics, cwd) {
+        match self.spawn_pane(metrics, connection, cwd) {
             Ok(pane) => {
                 let Some(w) = &mut self.window else { return };
                 let index = index.min(w.tabs.len());
@@ -382,8 +502,19 @@ impl App {
                 w.start_rename(tab, &self.config);
             }
             MenuCommand::Duplicate => {
-                let cwd = w.tabs[tab].active_pane().working_dir();
-                self.open_tab(tab + 1, cwd);
+                // A typed ssh is duplicated by running the same command.
+                let pane = w.tabs[tab].active_pane();
+                let (connection, cwd) = match (&pane.connection, &pane.detected_ssh) {
+                    (None, Some(detected)) => (
+                        Some(Connection {
+                            alias: detected.host().to_string(),
+                            argv: detected.argv.clone(),
+                        }),
+                        None,
+                    ),
+                    _ => Self::follow_pane(pane),
+                };
+                self.open_tab(tab + 1, connection, cwd);
             }
             MenuCommand::Color(color) => {
                 w.tabs[tab].color = color;
@@ -399,7 +530,14 @@ impl App {
         }
     }
 
+    /// Splits open a local shell too, like new tabs.
     fn split(&mut self, direction: Option<Direction>) {
+        let Some(w) = &self.window else { return };
+        let cwd = w.active_pane().working_dir();
+        self.split_with(direction, None, cwd);
+    }
+
+    fn split_with(&mut self, direction: Option<Direction>, connection: Option<Connection>, cwd: Option<PathBuf>) {
         let Some(w) = &self.window else { return };
         let active = w.active_pane();
         let direction = direction.unwrap_or(if active.area.width >= active.area.height {
@@ -407,8 +545,8 @@ impl App {
         } else {
             Direction::Vertical
         });
-        let (metrics, cwd) = (w.renderer.cell_metrics(), active.working_dir());
-        match self.spawn_pane(metrics, cwd) {
+        let metrics = w.renderer.cell_metrics();
+        match self.spawn_pane(metrics, connection, cwd) {
             Ok(pane) => {
                 let Some(w) = &mut self.window else { return };
                 let new_id = pane.id;
@@ -486,6 +624,7 @@ impl App {
                     self.close_tab(index);
                 }
             }
+            Action::SshConnect => self.open_palette(None),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
@@ -640,7 +779,7 @@ impl App {
                 }
                 TermEvent::Bell => bell = true,
                 TermEvent::ClipboardStore(text) => clipboard = Some(text),
-                TermEvent::Cwd(url) => pane.cwd = pane::path_from_file_url(&url).or(pane.cwd.take()),
+                TermEvent::Cwd(url) => pane.report_cwd(&url, &self.local_host),
                 TermEvent::SyncEnd => redraw |= shown,
             }
         }
@@ -679,6 +818,12 @@ impl App {
         if let Some(action) = self.tab_bar_click(button, pressed) {
             match action {
                 Some(BarAction::NewTab) => self.new_tab(),
+                Some(BarAction::Run(action, split)) => self.run_palette(action, split),
+                Some(BarAction::Palette(anchor)) => {
+                    // Line the picker's right edge up with the button.
+                    let width = self.window.as_ref().map_or(0.0, |w| w.renderer.cell_metrics().width * 64.0);
+                    self.open_palette(anchor.map(|(right, bottom)| (right - width, bottom)));
+                }
                 Some(BarAction::Close(index)) => self.close_tab(index),
                 Some(BarAction::Menu(command, tab)) => self.menu_command(tab, command),
                 None => {}
@@ -762,6 +907,27 @@ impl App {
         if !pressed && button == MouseButton::Left && w.tab_drag.take().is_some() {
             return Some(None);
         }
+        // The picker takes clicks while open: a row runs it, outside closes it.
+        if let Some(picker) = &w.palette {
+            if !pressed {
+                return Some(None);
+            }
+            let layout = palette::layout(picker, m, scale, w.window_rect());
+            w.window.request_redraw();
+            return Some(match palette::hit(&layout, x as f32, y as f32) {
+                None => {
+                    w.palette = None;
+                    None
+                }
+                Some(Some(position)) if button == MouseButton::Left => {
+                    let item = picker.matches()[position];
+                    let action = picker.items[item].action.clone();
+                    let split = w.modifiers.control_key();
+                    Some(BarAction::Run(action, split))
+                }
+                Some(_) => None,
+            });
+        }
         // An open menu takes the next click, wherever it lands.
         if let Some(open) = w.menu.take() {
             if !pressed {
@@ -834,6 +1000,10 @@ impl App {
                 None
             }
             (MouseButton::Left, Hit::NewTab) => Some(BarAction::NewTab),
+            (MouseButton::Left, Hit::Dropdown) => {
+                let anchor = layout.as_ref().and_then(|l| l.dropdown).map(|r| (r.x + r.width, r.y + r.height));
+                Some(BarAction::Palette(anchor))
+            }
             _ => None,
         };
         Some(action)
@@ -846,6 +1016,18 @@ impl App {
         let m = w.renderer.cell_metrics();
         let scale = w.scale_factor as f32;
 
+        if let Some(picker) = &w.palette {
+            let layout = palette::layout(picker, m, scale, w.window_rect());
+            let hover = palette::hit(&layout, x as f32, y as f32).flatten();
+            if let Some(picker) = &mut w.palette
+                && picker.hover != hover
+            {
+                picker.hover = hover;
+                w.window.request_redraw();
+            }
+            w.set_cursor_icon(if hover.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
+            return;
+        }
         if let Some(open) = &w.menu {
             let layout = menu::layout(open, &self.theme, m, scale, w.window_rect());
             let hover = menu::hit(&layout, x as f32, y as f32).flatten();
@@ -956,6 +1138,15 @@ impl App {
     fn handle_wheel(&mut self, delta: MouseScrollDelta) {
         let wheel_lines = self.config.terminal.wheel_scroll_lines as f64;
         let Some(w) = &mut self.window else { return };
+        if let Some(picker) = &mut w.palette {
+            let lines = match delta {
+                MouseScrollDelta::LineDelta(_, dy) => -dy.signum() as isize,
+                MouseScrollDelta::PixelDelta(p) => -(p.y.signum() as isize),
+            };
+            picker.scroll_by(lines);
+            w.window.request_redraw();
+            return;
+        }
         let (x, y) = (w.pointer.x, w.pointer.y);
         let m = w.renderer.cell_metrics();
         let modifiers = w.modifiers;
@@ -1117,16 +1308,32 @@ impl TermWindow {
             .enumerate()
             .map(|(i, tab)| {
                 let pane = tab.active_pane();
-                let title = tab
-                    .custom_title
-                    .clone()
-                    .or_else(|| (!pane.title.is_empty()).then(|| pane.title.clone()))
-                    .or_else(|| pane.process.clone())
-                    .unwrap_or_else(|| fallback.clone());
+                // SSH tabs are named after the host, plus the remote title.
+                let host = pane
+                    .connection
+                    .as_ref()
+                    .map(|c| c.alias.as_str())
+                    .or(pane.detected_ssh.as_ref().map(|d| d.host()));
+                let extras = host.and_then(|h| self.ssh_extras.get(h));
+                let shell_title = (!pane.title.is_empty()).then(|| pane.title.clone());
+                let title = tab.custom_title.clone().unwrap_or_else(|| match host {
+                    Some(host) => match shell_title {
+                        Some(t) if !t.contains(host) => format!("{host}: {t}"),
+                        Some(t) => t,
+                        None => host.to_string(),
+                    },
+                    None => shell_title
+                        .or_else(|| pane.process.clone())
+                        .unwrap_or_else(|| fallback.clone()),
+                });
+                let icon = match host {
+                    Some(_) => extras.and_then(HostExtras::icon_char).unwrap_or(SSH_ICON),
+                    None => tabbar::process_icon(pane.process.as_deref()),
+                };
                 TabInfo {
                     title,
-                    icon: tabbar::process_icon(pane.process.as_deref()),
-                    color: tab.color,
+                    icon,
+                    color: tab.color.or(extras.and_then(|e| e.color).map(|c| c.0)),
                     active: i == self.active_tab,
                 }
             })
@@ -1207,6 +1414,30 @@ impl TermWindow {
             tab.custom_title = (!text.is_empty()).then_some(text);
         }
         self.window.request_redraw();
+    }
+
+    /// Handles a key while the picker is open. Returns the chosen action and
+    /// whether to open it in a split.
+    fn palette_key(&mut self, event: &winit::event::KeyEvent) -> Option<(PaletteAction, bool)> {
+        let ctrl = self.modifiers.control_key();
+        let picker = self.palette.as_mut()?;
+        self.window.request_redraw();
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.palette = None,
+            Key::Named(NamedKey::Enter) => return picker.selected_action().map(|action| (action, ctrl)),
+            Key::Named(NamedKey::ArrowUp) => picker.move_selection(-1),
+            Key::Named(NamedKey::ArrowDown) => picker.move_selection(1),
+            Key::Named(NamedKey::Tab) => picker.move_selection(if self.modifiers.shift_key() { -1 } else { 1 }),
+            Key::Named(NamedKey::PageUp) => picker.move_selection(-10),
+            Key::Named(NamedKey::PageDown) => picker.move_selection(10),
+            Key::Named(NamedKey::Backspace) => picker.backspace(),
+            _ => {
+                if let Some(text) = event.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
+                    picker.type_text(text);
+                }
+            }
+        }
+        None
     }
 
     /// Feeds a key press to the title being edited.
@@ -1339,6 +1570,10 @@ impl TermWindow {
             let layout = menu::layout(open, theme, m, scale, self.window_rect());
             menu::draw(open, &layout, theme, m, scale, &mut items);
         }
+        if let Some(picker) = &self.palette {
+            let layout = palette::layout(picker, m, scale, self.window_rect());
+            palette::draw(picker, &layout, theme, m, scale, &mut items);
+        }
         // Asks the compositor for a frame callback, so a redraw requested for
         // the next animation frame arrives at the display's refresh rate.
         self.window.pre_present_notify();
@@ -1418,7 +1653,7 @@ fn watch_config(proxy: EventLoopProxy<UserEvent>) -> Option<notify::RecommendedW
         let Ok(event) = result else { return };
         let relevant = event.paths.iter().any(|path| {
             path.file_name()
-                .is_some_and(|name| name == CONFIG_FILE || name == THEME_FILE)
+                .is_some_and(|name| name == CONFIG_FILE || name == THEME_FILE || name == ssh::HOSTS_FILE)
         });
         if relevant {
             let _ = proxy.send_event(UserEvent::ConfigChanged);
@@ -1488,6 +1723,14 @@ impl ApplicationHandler<UserEvent> for App {
             } => {
                 let blink = self.blink_interval();
                 let Some(w) = &mut self.window else { return };
+                if w.palette.is_some() {
+                    if event.state == ElementState::Pressed
+                        && let Some((action, split)) = w.palette_key(&event)
+                    {
+                        self.run_palette(action, split);
+                    }
+                    return;
+                }
                 if w.menu.is_some() {
                     if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Escape) {
                         w.menu = None;
@@ -1509,6 +1752,12 @@ impl ApplicationHandler<UserEvent> for App {
                     return self.perform(action);
                 }
                 let pane = w.active_pane();
+                if pane.disconnected.is_some() {
+                    if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Enter) {
+                        self.reconnect();
+                    }
+                    return;
+                }
                 let (mode, flags) = {
                     let term = pane.lock();
                     (term.mode(), term.keyboard_flags())
@@ -1549,7 +1798,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wakeup(id) => self.handle_wakeup(id),
-            UserEvent::ChildExited(id) => self.remove_pane(id),
+            UserEvent::ChildExited(id) => self.child_exited(id),
             UserEvent::ConfigChanged => self.reload_at = Some(Instant::now() + RELOAD_DEBOUNCE),
         }
     }

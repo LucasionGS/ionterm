@@ -451,6 +451,22 @@ impl Term {
         self.dirty = true;
     }
 
+    /// Puts back the modes a crashed or disconnected program may have left
+    /// on: normal screen, visible cursor, no mouse or keyboard protocols,
+    /// plain colours.
+    pub fn reset_modes(&mut self) {
+        if self.mode.contains(TermMode::ALT_SCREEN) {
+            self.leave_alt_screen(true, false);
+        }
+        self.mode = TermMode::AUTOWRAP | TermMode::SHOW_CURSOR;
+        self.keyboard_stacks = [Vec::new(), Vec::new()];
+        self.cursor.template = Cell::default();
+        self.cursor_style = None;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows - 1;
+        self.dirty = true;
+    }
+
     /// Sixel images are always decoded; this only decides whether DA1 says
     /// so. Some programs (yazi) pick sixel over the kitty protocol when both
     /// are announced, which looks worse, so it is off by default.

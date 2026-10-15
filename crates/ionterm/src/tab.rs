@@ -48,6 +48,11 @@ impl Tab {
         self.pane(self.active).expect("a tab always has its active pane")
     }
 
+    pub fn active_pane_mut(&mut self) -> &mut Pane {
+        let id = self.active;
+        self.pane_mut(id).expect("a tab always has its active pane")
+    }
+
     fn effective_layout(&self) -> Layout {
         if self.zoomed { Layout::Stack } else { self.layout }
     }

@@ -21,6 +21,15 @@ use crate::layout::PaneId;
 
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// Where a PTY's output goes: the pane's terminal, and the event loop to
+/// wake when there is something to draw.
+pub struct OutputSink {
+    pub pane: PaneId,
+    pub term: Arc<Mutex<Term>>,
+    pub proxy: EventLoopProxy<UserEvent>,
+    pub wakeup_pending: Arc<AtomicBool>,
+}
+
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     writer: SharedWriter,
@@ -29,17 +38,22 @@ pub struct Pty {
 
 impl Pty {
     pub fn spawn(
-        pane: PaneId,
         config: &TerminalConfig,
+        argv: Option<&[String]>,
         cwd: Option<&Path>,
         size: PtySize,
-        term: Arc<Mutex<Term>>,
-        proxy: EventLoopProxy<UserEvent>,
-        wakeup_pending: Arc<AtomicBool>,
+        sink: OutputSink,
     ) -> anyhow::Result<Self> {
+        let OutputSink {
+            pane,
+            term,
+            proxy,
+            wakeup_pending,
+        } = sink;
         let pair = native_pty_system().openpty(size).context("opening a PTY")?;
 
-        let words = match config.command.split_first() {
+        // An explicit command (an ssh connection), `ionterm -e`, or the shell.
+        let words = match argv.or(Some(config.command.as_slice())).and_then(|a| a.split_first()) {
             Some((program, args)) => Some((program.clone(), args.to_vec())),
             None => shell_words(&config.shell),
         };
@@ -144,20 +158,36 @@ impl Pty {
     /// The name of the program in the foreground (`fish`, `nvim`, `ssh`…),
     /// for the tab icon. Linux only.
     pub fn foreground_process(&self) -> Option<String> {
+        let pid = self.foreground_pid()?;
+        let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        Some(name.trim().to_string())
+    }
+
+    /// The foreground process group's leader. Linux only.
+    pub fn foreground_pid(&self) -> Option<i64> {
         #[cfg(target_os = "linux")]
         {
-            let pid = self
-                .master
+            self.master
                 .process_group_leader()
                 .map(i64::from)
-                .or_else(|| self.child.process_id().map(i64::from))?;
-            let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-            Some(name.trim().to_string())
+                .or_else(|| self.child.process_id().map(i64::from))
         }
         #[cfg(not(target_os = "linux"))]
         {
             None
         }
+    }
+
+    /// The child's exit code once it has exited.
+    pub fn exit_code(&mut self) -> Option<u32> {
+        // The reader saw EOF just before the child is reaped; wait briefly.
+        for _ in 0..20 {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return Some(status.exit_code());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        None
     }
 
     pub fn resize(&self, size: PtySize) {
