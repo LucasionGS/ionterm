@@ -162,7 +162,7 @@ Every key has a default, so ionterm runs with no config at all.
 - [ ] Drag split borders with the mouse
 - [x] Kitty graphics protocol: transmission (direct and chunked, file, temp file, shared memory; RGB, RGBA, PNG, zlib), queries and replies, placements anchored to their rows (scroll, scrollback, reflow), z-index above/below text, deletion, unicode placeholders (tmux)
 - [ ] Kitty graphics animation (`a=f`, `a=a`, `a=c`) and relative placements (`P`, `Q`)
-- Sixel
+- [x] Sixel: streaming decoder (RGB/HLS colours, repeats, raster attributes, transparent or filled background), shown through the same image path as kitty graphics; DECSDM (mode 80), XTSMGRAPHICS; announced in DA1 only with `advertise_sixel`
 
 ### v0.3: power features
 - Shell integration (fish/bash/zsh): jump between prompts (OSC 133 marks are already tracked), select command output, OSC 7 cwd for new tabs/splits

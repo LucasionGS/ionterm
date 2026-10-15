@@ -79,6 +79,7 @@ impl Pane {
         let (cols, rows) = (80, 24);
         let mut term = Term::new(cols, rows, config.scrollback_lines, palette);
         term.set_cell_size(metrics.width as u32, metrics.height as u32);
+        term.set_advertise_sixel(config.advertise_sixel);
         let term = Arc::new(Mutex::new(term));
         let wakeup_pending = Arc::new(AtomicBool::new(false));
         let pty = Pty::spawn(

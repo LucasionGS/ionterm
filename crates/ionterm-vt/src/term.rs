@@ -12,6 +12,7 @@ use crate::cell::{Cell, Flags, Row};
 use crate::charset::Charset;
 use crate::color::{Color, Palette, Rgb};
 use crate::graphics::{Anchor, Command, Graphics, GraphicsError, Image, ImageDraw, Placement};
+use crate::sixel::SixelDecoder;
 use crate::reflow::{Reflowed, reflow, wide_padding};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -51,6 +52,8 @@ bitflags! {
         const ALTERNATE_SCROLL = 1 << 18;
         const CURSOR_BLINK = 1 << 19;
         const MOUSE_SGR_PIXELS = 1 << 20;
+        /// DECSDM: sixel images go to the top-left corner and don't scroll.
+        const SIXEL_DISPLAY = 1 << 21;
 
         const MOUSE_REPORTING = Self::MOUSE_X10.bits()
             | Self::MOUSE_NORMAL.bits()
@@ -109,6 +112,7 @@ enum Dcs {
     GetTermcap(Vec<u8>),
     /// DECRQSS: `DCS $ q <setting> ST`.
     RequestSetting(Vec<u8>),
+    Sixel(Box<SixelDecoder>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +269,8 @@ pub struct Term {
     /// the shell is showing its prompt and will redraw it after a resize.
     at_prompt: bool,
     graphics: Graphics,
+    /// Whether the device attributes reply announces sixel support.
+    advertise_sixel: bool,
     /// OSC 8 targets; a cell's `hyperlink` is an index into this plus one.
     hyperlinks: Vec<String>,
     /// (OSC 8 `id` parameter, URI) → hyperlink id, so repeated links share one.
@@ -313,6 +319,7 @@ impl Term {
             keyboard_stacks: [Vec::new(), Vec::new()],
             at_prompt: false,
             graphics: Graphics::default(),
+            advertise_sixel: false,
             hyperlinks: Vec::new(),
             hyperlink_ids: HashMap::new(),
             cell_width: 0,
@@ -442,6 +449,13 @@ impl Term {
         self.base_palette = palette.clone();
         self.palette = palette;
         self.dirty = true;
+    }
+
+    /// Sixel images are always decoded; this only decides whether DA1 says
+    /// so. Some programs (yazi) pick sixel over the kitty protocol when both
+    /// are announced, which looks worse, so it is off by default.
+    pub fn set_advertise_sixel(&mut self, advertise: bool) {
+        self.advertise_sixel = advertise;
     }
 
     pub fn set_scrollback_limit(&mut self, limit: usize) {
@@ -917,6 +931,7 @@ impl Term {
             12 => TermMode::CURSOR_BLINK,
             25 => TermMode::SHOW_CURSOR,
             66 => TermMode::APP_KEYPAD,
+            80 => TermMode::SIXEL_DISPLAY,
             1000 => TermMode::MOUSE_NORMAL,
             1002 => TermMode::MOUSE_BUTTON,
             1003 => TermMode::MOUSE_ANY,
@@ -991,6 +1006,7 @@ impl Term {
             12 => TermMode::CURSOR_BLINK,
             25 => TermMode::SHOW_CURSOR,
             66 => TermMode::APP_KEYPAD,
+            80 => TermMode::SIXEL_DISPLAY,
             1000 => TermMode::MOUSE_NORMAL,
             1002 => TermMode::MOUSE_BUTTON,
             1003 => TermMode::MOUSE_ANY,
@@ -1129,6 +1145,11 @@ impl Term {
 
     fn finish_dcs(&mut self, dcs: Dcs) {
         match dcs {
+            Dcs::Sixel(decoder) => {
+                if let Some((width, height, rgba)) = decoder.finish() {
+                    self.place_sixel(width, height, rgba);
+                }
+            }
             Dcs::GetTermcap(data) => {
                 for name_hex in data.split(|&b| b == b';') {
                     let Some(name) = hex_decode(name_hex) else {
@@ -1269,6 +1290,25 @@ impl Term {
             self.cursor.col = next;
             self.cursor.wrap_pending = false;
         }
+    }
+
+    /// Shows a decoded sixel image at the cursor. Unless sixel display mode is
+    /// on, the cursor then moves to the line below it, like xterm's.
+    fn place_sixel(&mut self, width: u32, height: u32, rgba: Vec<u8>) {
+        let id = self.graphics.store(0, 0, width, height, rgba);
+        let key = self.graphics.place(id, &Command::default(), (self.cell_width, self.cell_height));
+        self.dirty = true;
+        if self.mode.contains(TermMode::SIXEL_DISPLAY) {
+            self.grid[0].anchors.push(Anchor { placement: key, col: 0 });
+            return;
+        }
+        let (row, col) = (self.cursor.row, self.cursor.col);
+        self.grid[row].anchors.push(Anchor { placement: key, col });
+        let rows = self.graphics.placement(key).map_or(1, |p| p.rows as usize);
+        for _ in 0..rows {
+            self.linefeed();
+        }
+        self.cursor.col = col;
     }
 
     /// Anchored placements on the current screen: (key, row, col, placement).
@@ -1483,19 +1523,24 @@ impl Perform for Term {
         }
     }
 
-    fn hook(&mut self, _params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+    fn hook(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         self.dcs = match (intermediates, action) {
             ([b'+'], 'q') => Some(Dcs::GetTermcap(Vec::new())),
             ([b'$'], 'q') => Some(Dcs::RequestSetting(Vec::new())),
+            ([], 'q') => {
+                let params: Vec<u16> = params.iter().map(|p| p[0]).collect();
+                let bg = self.palette.background;
+                Some(Dcs::Sixel(Box::new(SixelDecoder::new(&params, [bg.r, bg.g, bg.b]))))
+            }
             _ => None,
         };
     }
 
     fn put(&mut self, byte: u8) {
-        if let Some(Dcs::GetTermcap(data) | Dcs::RequestSetting(data)) = &mut self.dcs
-            && data.len() < MAX_DCS_LEN
-        {
-            data.push(byte);
+        match &mut self.dcs {
+            Some(Dcs::Sixel(decoder)) => decoder.put(byte),
+            Some(Dcs::GetTermcap(data) | Dcs::RequestSetting(data)) if data.len() < MAX_DCS_LEN => data.push(byte),
+            _ => {}
         }
     }
 
@@ -1710,6 +1755,19 @@ impl Perform for Term {
                 cells.resize(self.cols, blank);
             }
             ([], 'S') => self.scroll_up_in(self.scroll_top, self.scroll_bottom, n(0), true),
+            // XTSMGRAPHICS: sixel colour registers (1) and maximum size (2).
+            ([b'?'], 'S') => {
+                let (item, action) = (arg(0, 0), arg(1, 0));
+                let reply = match (item, action) {
+                    (1, 1 | 4) => "1;0;1024".to_string(),
+                    (2, 1 | 4) => {
+                        let (w, h) = (self.cell_width as usize * self.cols, self.cell_height as usize * self.rows);
+                        format!("2;0;{w};{h}")
+                    }
+                    _ => format!("{item};1"),
+                };
+                self.reply(&format!("\x1b[?{reply}S"));
+            }
             ([], 'T') => self.scroll_down_in(self.scroll_top, self.scroll_bottom, n(0)),
             ([], 'X') => {
                 let col = self.cursor.col;
@@ -1730,8 +1788,12 @@ impl Perform for Term {
                 }
             }
             ([], 'c') if arg(0, 0) == 0 => {
-                // VT220 with ANSI colour and clipboard access.
-                self.reply("\x1b[?62;22;52c");
+                // VT220 with ANSI colour and clipboard access (and sixel graphics).
+                if self.advertise_sixel {
+                    self.reply("\x1b[?62;4;22;52c");
+                } else {
+                    self.reply("\x1b[?62;22;52c");
+                }
             }
             ([b'>'], 'c') if arg(0, 0) == 0 => {
                 let version: u32 = VERSION
@@ -2159,6 +2221,25 @@ mod tests {
         // Deleting by id removes the placement.
         p.advance(&mut t, b"\x1b_Ga=d,d=I,i=5\x1b\\");
         assert!(t.snapshot().images.is_empty());
+    }
+
+    #[test]
+    fn sixel_images_are_placed() {
+        let (mut t, mut p) = term(20, 5);
+        t.set_cell_size(10, 20);
+        // 12 columns of red, 6 pixels tall: one cell row, two columns wide.
+        p.advance(&mut t, b"ab\x1bP0;1;0q#1;2;100;0;0!12~\x1b\\cd");
+        let snap = t.snapshot();
+        assert_eq!(snap.images.len(), 1);
+        assert_eq!((snap.images[0].image.width, snap.images[0].image.height), (12, 6));
+        assert_eq!((snap.images[0].row, snap.images[0].col), (0, 2));
+        // The cursor went to the line below, at the image's column.
+        assert_eq!(line(&t, 1), "  cd");
+        p.advance(&mut t, b"\x1b[c\x1b[?2;1S");
+        assert_eq!(t.take_output(), b"\x1b[?62;22;52c\x1b[?2;0;200;100S");
+        t.set_advertise_sixel(true);
+        p.advance(&mut t, b"\x1b[c");
+        assert_eq!(t.take_output(), b"\x1b[?62;4;22;52c");
     }
 
     #[test]

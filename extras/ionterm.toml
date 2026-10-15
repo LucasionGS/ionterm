@@ -21,6 +21,7 @@ scrollback_lines = 10000
 shell = ""                           # empty = your login shell
 term = "auto"                        # auto = xterm-ionterm if installed, else xterm-256color
 wheel_scroll_lines = 3
+advertise_sixel = false              # sixel always displays; announcing it makes yazi pick sixel over kitty graphics
 
 [tab_bar]
 style = "tabs"                       # tabs (Windows Terminal style) | slanted | angled | round (kitty Powerline)

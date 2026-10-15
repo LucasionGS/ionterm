@@ -17,11 +17,11 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **Clickable links**: links that programs print and plain URLs get underlined on hover; ctrl+click opens them.
 - **Reflow**: resize the window and long lines re-wrap instead of getting chopped, which matters when Hyprland keeps retiling.
 - **Tabs, Windows Terminal style**: rounded tabs up top with close and + buttons, drag to reorder, double-click to rename, right-click to colour or duplicate a tab, and an icon for whatever's running (fish, nvim, btop, ssh…). Prefer kitty's Powerline strip? It's one setting away.
-- **Images in the terminal**: the kitty graphics protocol, so `kitten icat`, chafa, yazi and nvim image plugins show real pictures, even through tmux.
+- **Images in the terminal**: the kitty graphics protocol and Sixel, so `kitten icat`, chafa, yazi, ImageMagick and nvim image plugins show real pictures, even through tmux.
 - **Splits and layouts**: split any pane, or let kitty-style layouts (tall, fat, grid, stack) arrange them. New tabs and splits open in the directory you're in.
 - **SSH-friendly**: `TERM` falls back to `xterm-256color` whenever the remote end might not know `xterm-ionterm`, so no more "unknown terminal".
 
-Coming up: Sixel images, shell integration, hints mode and scrollback search. See [the plan](docs/PLAN.md).
+Coming up: shell integration, hints mode and scrollback search. See [the plan](docs/PLAN.md).
 
 ## Configuration
 

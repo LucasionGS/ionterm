@@ -260,9 +260,13 @@ impl Graphics {
             raw
         };
         let (width, height, rgba) = decode(cmd, raw)?;
+        Ok(self.store(cmd.id, cmd.number, width, height, rgba))
+    }
 
-        let id = if cmd.id != 0 {
-            cmd.id
+    /// Stores decoded RGBA under `id` (0 = pick a free id). Returns the id.
+    pub fn store(&mut self, id: u32, number: u32, width: u32, height: u32, rgba: Vec<u8>) -> u32 {
+        let id = if id != 0 {
+            id
         } else {
             // Ids the terminal picks count down from the top so they never
             // collide with small ids clients choose themselves.
@@ -275,9 +279,9 @@ impl Graphics {
         if let Some(old) = self.images.remove(&id) {
             self.stored_bytes -= old.rgba.len();
         }
-        if cmd.number != 0 {
+        if number != 0 {
             // Numbers are not unique: the newest image with a number wins.
-            for image in self.images.values_mut().filter(|i| i.number == cmd.number) {
+            for image in self.images.values_mut().filter(|i| i.number == number) {
                 image.number = 0;
             }
         }
@@ -287,7 +291,7 @@ impl Graphics {
             id,
             Image {
                 id,
-                number: cmd.number,
+                number,
                 width,
                 height,
                 rgba: Arc::new(rgba),
@@ -295,7 +299,7 @@ impl Graphics {
             },
         );
         self.enforce_quota(id);
-        Ok(id)
+        id
     }
 
     /// Looks up the image a command refers to by id or number.

@@ -266,6 +266,7 @@ impl App {
             let mut term = pane.lock();
             term.set_palette(self.theme.palette());
             term.set_scrollback_limit(self.config.terminal.scrollback_lines);
+            term.set_advertise_sixel(self.config.terminal.advertise_sixel);
         }
         w.next_blink = blink.map(|d| Instant::now() + d);
         w.blink_on = true;

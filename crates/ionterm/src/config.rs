@@ -96,6 +96,10 @@ pub struct TerminalConfig {
     pub term: String,
     /// Lines moved per mouse wheel notch.
     pub wheel_scroll_lines: usize,
+    /// Announce sixel support to programs. Sixel images display either way;
+    /// announcing it makes some (yazi) prefer sixel over the sharper kitty
+    /// protocol, but others (lsix) need it.
+    pub advertise_sixel: bool,
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
@@ -108,6 +112,7 @@ impl Default for TerminalConfig {
             shell: String::new(),
             term: "auto".into(),
             wheel_scroll_lines: 3,
+            advertise_sixel: false,
             command: Vec::new(),
         }
     }

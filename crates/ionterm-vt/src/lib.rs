@@ -12,6 +12,7 @@ mod color;
 mod diacritics;
 mod graphics;
 mod reflow;
+mod sixel;
 mod term;
 
 pub use cell::{Cell, Flags, Row};
