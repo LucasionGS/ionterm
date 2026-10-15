@@ -23,6 +23,7 @@ term = "auto"                        # auto = xterm-ionterm if installed, else x
 wheel_scroll_lines = 3
 advertise_sixel = false              # sixel always displays; announcing it makes yazi pick sixel over kitty graphics
 confirm_multiline_paste = true       # ask before pasting lines that would each run immediately (no bracketed paste)
+remote_control = true                # "ionterm @ ls", "ionterm @ send-text …": scripts drive ionterm over a socket only you can open
 scrollback_pager = "less -R +INPUT_LINE_NUMBER"   # ctrl+shift+h; INPUT_LINE_NUMBER = the line on screen, the file goes last
 shell_integration = true             # mark prompts in bash/zsh/fish 3 (fish 4 does it itself): prompt jumps, output selection, failed marks
 

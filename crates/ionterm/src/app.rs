@@ -5,6 +5,7 @@ mod drag;
 mod files;
 mod hints;
 mod integration;
+mod remote;
 mod rzsz;
 mod search;
 mod settings;
@@ -80,6 +81,8 @@ pub enum UserEvent {
     Drag(DragEvent),
     /// A ZMODEM transfer in a pane moved along.
     Zmodem(PaneId, zmodem::Event),
+    /// A remote control command (`ionterm @ …`).
+    Remote(crate::remote::Request),
 }
 
 pub struct App {
@@ -684,8 +687,13 @@ impl App {
     /// closes when the command ends.
     fn open_command_tab(&mut self, argv: Vec<String>, cwd: Option<PathBuf>) {
         let Some(w) = &self.window else { return };
-        let metrics = w.renderer.cell_metrics();
         let index = w.active_tab + 1;
+        self.open_command_tab_at(index, argv, cwd);
+    }
+
+    fn open_command_tab_at(&mut self, index: usize, argv: Vec<String>, cwd: Option<PathBuf>) {
+        let Some(w) = &self.window else { return };
+        let metrics = w.renderer.cell_metrics();
         let mut terminal = self.config.terminal.clone();
         terminal.command = argv;
         let id = self.next_pane_id;
@@ -783,14 +791,39 @@ impl App {
 
     fn split_with(&mut self, direction: Option<Direction>, connection: Option<Connection>, cwd: Option<PathBuf>) {
         let Some(w) = &self.window else { return };
+        let metrics = w.renderer.cell_metrics();
+        let pane = self.spawn_pane(metrics, connection, cwd);
+        self.add_split(direction, pane);
+    }
+
+    /// Splits the active pane with one running `command` (or the shell).
+    fn split_running(&mut self, direction: Option<Direction>, command: Option<Vec<String>>, cwd: Option<PathBuf>) {
+        let Some(command) = command else {
+            self.split_with(direction, None, cwd);
+            return;
+        };
+        let Some(w) = &self.window else { return };
+        let metrics = w.renderer.cell_metrics();
+        let mut terminal = self.config.terminal.clone();
+        terminal.command = command;
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
+        let pane = Pane::spawn(id, &terminal, None, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem);
+        self.add_split(direction, pane);
+    }
+
+    /// Puts a new pane beside the active one, along the longer side unless
+    /// told, and focuses it.
+    fn add_split(&mut self, direction: Option<Direction>, pane: anyhow::Result<Pane>) {
+        let Some(w) = &self.window else { return };
         let active = w.active_pane();
         let direction = direction.unwrap_or(if active.area.width >= active.area.height {
             Direction::Horizontal
         } else {
             Direction::Vertical
         });
-        let metrics = w.renderer.cell_metrics();
-        match self.spawn_pane(metrics, connection, cwd) {
+        match pane {
             Ok(pane) => {
                 let Some(w) = &mut self.window else { return };
                 let new_id = pane.id;
@@ -2278,7 +2311,13 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match self.create_window(event_loop) {
-            Ok(window) => self.window = Some(window),
+            Ok(window) => {
+                self.window = Some(window);
+                if self.config.terminal.remote_control {
+                    let proxy = self.proxy.clone();
+                    crate::remote::listen(move |request| proxy.send_event(UserEvent::Remote(request)).is_ok());
+                }
+            }
             Err(error) => {
                 self.error = Some(error);
                 event_loop.exit();
@@ -2517,6 +2556,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Transfer(id, event) => self.transfer_event(id, event),
             UserEvent::Drag(event) => self.drag_event(event),
             UserEvent::Zmodem(pane, event) => self.zmodem_event(pane, event),
+            UserEvent::Remote(request) => self.remote_request(request),
         }
     }
 
@@ -2581,5 +2621,6 @@ impl ApplicationHandler<UserEvent> for App {
             w.drops = None;
         }
         scrollback::remove_files();
+        crate::remote::remove_socket();
     }
 }

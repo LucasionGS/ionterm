@@ -16,6 +16,7 @@ mod notifications;
 mod palette;
 mod pane;
 mod pty;
+mod remote;
 mod scrollback;
 mod search;
 mod settings;
@@ -39,7 +40,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn print_help() {
     println!("ionterm {VERSION}: a GPU-rendered terminal emulator\n");
     println!("Usage: ionterm [options] [-e <command> [args...]]");
-    println!("       ionterm ssh <host>       Open a window connected to an ssh config host\n");
+    println!("       ionterm ssh <host>       Open a window connected to an ssh config host");
+    println!("       ionterm @ <command>      Control a running ionterm (\"ionterm @ help\" lists commands)\n");
     println!("Options:");
     println!("  -e, --exec <command>   Run <command> instead of the shell (takes the rest of the line)");
     println!("  -h, --help             Show this help");
@@ -53,6 +55,11 @@ fn main() -> ExitCode {
             EnvFilter::try_from_env("IONTERM_LOG").unwrap_or_else(|_| EnvFilter::new("ionterm=info,warn")),
         )
         .init();
+
+    // `ionterm @ …` only talks to a running window.
+    if std::env::args().nth(1).as_deref() == Some("@") {
+        return remote::client(std::env::args().skip(2).collect());
+    }
 
     let mut config = Config::load();
     let mut args = std::env::args().skip(1);

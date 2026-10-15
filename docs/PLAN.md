@@ -208,4 +208,4 @@ Phase 3: files
 ### v0.4: Ionix and Windows
 - Styler section upstreamed into the Ionix repo; ionterm replaces kitty in the ISO, Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab
 - Windows polish: own titlebar, DirectWrite font fallback check, installer/zip release
-- Optional: `ionterm @` remote control over a Unix socket / named pipe
+- [x] `ionterm @` remote control over a Unix socket (`ls`, `send-text`, `get-text`, `new-tab`, `split`, `focus`, `close`, `set-title`, `action`); `IONTERM_SOCKET` / `IONTERM_PANE` in every pane, stale sockets cleaned up. Windows named pipe still to do

@@ -225,6 +225,8 @@ pub struct TerminalConfig {
     /// Shows the scrollback (`show_scrollback`); `INPUT_LINE_NUMBER` becomes
     /// the line to open at, and the file's path goes last.
     pub scrollback_pager: String,
+    /// Listen for `ionterm @` commands from programs running as you.
+    pub remote_control: bool,
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
@@ -244,6 +246,7 @@ impl Default for TerminalConfig {
             shell_integration: true,
             confirm_multiline_paste: true,
             scrollback_pager: "less -R +INPUT_LINE_NUMBER".into(),
+            remote_control: true,
             command: Vec::new(),
             startup_ssh: None,
         }

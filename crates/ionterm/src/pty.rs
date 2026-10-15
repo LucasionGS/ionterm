@@ -98,6 +98,11 @@ impl Pty {
         command.env("COLORTERM", "truecolor");
         command.env("TERM_PROGRAM", "ionterm");
         command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        // For `ionterm @`: which window and pane a command runs in.
+        if let Some(socket) = crate::remote::socket_path() {
+            command.env("IONTERM_SOCKET", socket);
+        }
+        command.env("IONTERM_PANE", pane.to_string());
 
         let child = pair.slave.spawn_command(command).context("starting the shell")?;
         // The child holds its own handle; keeping ours open would stop us from

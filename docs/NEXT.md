@@ -67,6 +67,7 @@ crates/ionterm/          the app
                          settings.rs (settings tab, config writes, $EDITOR in the tab)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
+  remote.rs              `ionterm @`: socket, client, request parsing (commands run in app/remote.rs)
   scrollback.rs          the scrollback as ANSI text for the pager (ctrl+shift+h), the pager command
   hints.rs               hints mode: finding URLs/paths/file:line/hashes/IPs, labels, editor commands
   settings.rs            the settings page: settings list, controls, keys, layout and drawing
@@ -174,6 +175,6 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
 - **v0.4:**
   - Upstream `extras/ionix-styler` into `/home/ion/development/ionix/profile/airootfs/usr/local/share/ionix/styler/`, then make ionterm the Ionix default terminal (replace kitty in Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab's btop launcher).
   - Windows polish (own titlebar, installer).
-  - Optional `ionterm @` remote control.
+  - `ionterm @` over a Windows named pipe (Unix socket done: `remote.rs`, `app/remote.rs`).
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
 - **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there. Reconnect after a dropped connection is still only tested against the fake-ssh setup.
