@@ -313,7 +313,7 @@ impl App {
 
     /// Opens a local file in the editor (or the configured program), and a
     /// folder in the file manager.
-    fn open_file(&mut self, path: PathBuf, line: Option<u32>, col: Option<u32>, cwd: Option<PathBuf>, template: &str) {
+    pub(super) fn open_file(&mut self, path: PathBuf, line: Option<u32>, col: Option<u32>, cwd: Option<PathBuf>, template: &str) {
         let Some(w) = &mut self.window else { return };
         if !path.exists() {
             w.show_toast(format!("Not found: {}", path.display()));

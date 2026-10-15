@@ -14,7 +14,7 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **Pixel-perfect box drawing**: lines, blocks, rounded corners and Powerline arrows are drawn by ionterm itself, so TUIs look sharp in any font.
 - **Modern protocols**: kitty keyboard protocol, synchronized output, styled and coloured underlines, truecolor, bracketed paste, focus events, OSC 52 clipboard.
 - **Mouse that behaves**: click-drag, double-click word and triple-click line selection, primary selection on middle click, and mouse reporting for TUIs (hold shift to select anyway).
-- **Clickable links**: links that programs print and plain URLs get underlined on hover; ctrl+click opens them.
+- **Clickable links and files**: links that programs print and plain URLs get underlined on hover; ctrl+click opens them. Hold ctrl and file paths light up too: click `src/main.rs:42` in a compiler error and your editor opens right on that line.
 - **Reflow**: resize the window and long lines re-wrap instead of getting chopped, which matters when Hyprland keeps retiling.
 - **Tabs, Windows Terminal style**: rounded tabs up top with close and + buttons, drag to reorder, double-click to rename, right-click to colour or duplicate a tab, and an icon for whatever's running (fish, nvim, btop, ssh…). Prefer kitty's Powerline strip? It's one setting away.
 - **Images in the terminal**: the kitty graphics protocol and Sixel, so `kitten icat`, chafa, yazi, ImageMagick and nvim image plugins show real pictures, even through tmux.

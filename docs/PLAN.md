@@ -151,6 +151,7 @@ Every key has a default, so ionterm runs with no config at all.
 - [x] xterm-ionterm terminfo source (installed in v0.3 together with the SSH wrapper)
 - [x] Linear-light text blending and unhinted glyphs, matching kitty's rendering
 - [x] OSC 8 hyperlinks and plain-text URL detection: underline on hover, ctrl+click to open (ctrl+shift+click inside mouse-grabbing apps)
+- [x] ctrl+click file paths: with ctrl held, paths that exist (and `file:line:col`) in local panes underline and open like hints do (editor at the line, folders in the file manager)
 - [x] Reflow on resize (primary screen and scrollback; the alternate screen is left to the app)
 - [x] OSC 133 prompt marks: while the shell is at its prompt, resizing blanks the prompt instead of reflowing it, so shells that redraw (fish, oh-my-posh) don't leave stray copies
 - [x] Kitty keyboard protocol verified with real keystrokes (`scripts/keytest.sh`, Hyprland)

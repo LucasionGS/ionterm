@@ -331,11 +331,19 @@ impl Pane {
         (col.min(self.grid.0 - 1), row.min(self.grid.1 - 1))
     }
 
-    /// Finds the link at a cell. Returns whether the hovered link changed.
-    pub fn update_hover(&mut self, cell: Option<(usize, usize)>) -> bool {
+    /// Finds the link at a cell; with `files` (ctrl held) a local file path
+    /// counts too. Returns whether the hovered link changed.
+    pub fn update_hover(&mut self, cell: Option<(usize, usize)>, files: bool) -> bool {
+        // Paths in an SSH pane are on the server, where they can't be checked.
+        let files = files && self.connection.is_none() && self.detected_ssh.is_none();
+        let cwd = files.then(|| self.working_dir()).flatten();
         let hovered = cell.and_then(|(col, row)| {
             let term = self.lock();
-            links::link_at(&term, term.viewport_to_absolute(row), col)
+            let line = term.viewport_to_absolute(row);
+            links::link_at(&term, line, col).or_else(|| {
+                let exists = |path: &str| crate::hints::resolve(path, cwd.as_deref()).exists();
+                files.then(|| links::path_at(&term, line, col, &exists)).flatten()
+            })
         });
         let changed = hovered != self.hovered;
         self.hovered = hovered;

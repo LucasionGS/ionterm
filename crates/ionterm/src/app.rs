@@ -192,6 +192,8 @@ enum FollowUp {
     None,
     CopyPrimary,
     PastePrimary,
+    /// A ctrl+clicked file path, from a pane in `cwd`.
+    OpenFile(links::FileLink, Option<PathBuf>),
 }
 
 impl App {
@@ -647,6 +649,11 @@ impl App {
             FollowUp::None => {}
             FollowUp::CopyPrimary => self.copy_selection(true),
             FollowUp::PastePrimary => self.paste(cfg!(target_os = "linux")),
+            FollowUp::OpenFile(file, cwd) => {
+                let path = crate::hints::resolve(&file.path, cwd.as_deref());
+                let template = self.config.hints.open_file.clone();
+                self.open_file(path, file.line, file.col, cwd, &template);
+            }
         }
     }
 
@@ -1215,6 +1222,9 @@ impl App {
             && modifiers.control_key()
             && let Some(link) = &pane.hovered
         {
+            if let Some(file) = &link.file {
+                return FollowUp::OpenFile(file.clone(), pane.working_dir());
+            }
             links::open(&link.uri);
             return FollowUp::None;
         }
@@ -1536,7 +1546,7 @@ impl App {
             // Leaving the panes: no pane cell is under the mouse any more.
             w.pointer_cell = None;
             for pane in &mut w.tabs[w.active_tab].panes {
-                if pane.update_hover(None) {
+                if pane.update_hover(None, false) {
                     w.window.request_redraw();
                 }
             }
@@ -1561,9 +1571,10 @@ impl App {
         }
         // Hover belongs to the pane under the pointer; clear it elsewhere.
         let mut redraw = false;
+        let ctrl = w.modifiers.control_key();
         for pane in &mut w.tabs[w.active_tab].panes {
             let hover_cell = (under == Some(pane.id)).then(|| pane.cell_at(x, y, m));
-            redraw |= pane.update_hover(hover_cell);
+            redraw |= pane.update_hover(hover_cell, ctrl);
         }
         let on_link = under
             .and_then(|id| w.tabs[w.active_tab].pane(id))
@@ -1664,7 +1675,7 @@ impl App {
             pane.write(&key.repeat(whole.unsigned_abs()));
         } else {
             pane.lock().scroll_display(whole);
-            pane.update_hover(Some((col, row)));
+            pane.update_hover(Some((col, row)), modifiers.control_key());
             w.window.request_redraw();
         }
     }
@@ -1800,6 +1811,19 @@ impl TermWindow {
         }
         height -= 2.0 * (config.window.padding * self.scale_factor as f32).round();
         (height / m.height).floor().max(1.0) as usize
+    }
+
+    /// Finds the link under the pointer again: holding ctrl makes file
+    /// paths count.
+    fn refresh_hover(&mut self) {
+        let Some((id, cell)) = self.pointer_cell else { return };
+        let ctrl = self.modifiers.control_key();
+        let Some(pane) = self.tabs[self.active_tab].pane_mut(id) else { return };
+        if pane.update_hover(Some(cell), ctrl) {
+            let icon = if pane.hovered.is_some() { CursorIcon::Pointer } else { CursorIcon::Text };
+            self.set_cursor_icon(icon);
+            self.window.request_redraw();
+        }
     }
 
     /// Turns broadcasting on or off for the active tab.
@@ -2288,7 +2312,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 if let Some(w) = &mut self.window {
+                    let ctrl_changed = w.modifiers.control_key() != modifiers.state().control_key();
                     w.modifiers = modifiers.state();
+                    if ctrl_changed {
+                        w.refresh_hover();
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
@@ -2458,7 +2486,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(w) = &mut self.window {
                     let mut redraw = false;
                     for pane in &mut w.tabs[w.active_tab].panes {
-                        redraw |= pane.update_hover(None);
+                        redraw |= pane.update_hover(None, false);
                     }
                     w.pointer_cell = None;
                     if w.tab_hover != Hit::None {
