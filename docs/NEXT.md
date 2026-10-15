@@ -35,6 +35,17 @@ Done so far, in commit order (`git log --oneline`):
 9. **Shell integration (v0.3b):** OSC 133 marks on rows (`Row::prompt`, `output`, `status`; carried through reflow) and the queries on `Term` (`prompt_lines`, `command_output_at`, `last_command_output`, `failed_commands_in_view`, `click_goes_to_shell`, `progress`, `progress_hint`). `shell.rs` injects `extras/shell-integration/ionterm.{bash,zsh,fish}` into the local login shell (bash `--rcfile`, zsh `ZDOTDIR`, fish 3 `-C`; fish 4 needs nothing), and `ssh/bootstrap.rs` embeds the same files. `app/integration.rs` has the prompt jumps, output copy/select, failed marks and the tab progress bars (`tabbar::draw_progress`).
 10. **Hints mode (v0.3b):** `hints.rs` (finding URLs, paths, `file:line`, hashes and IPs in a line; labels; editor commands, testable without a window) and `app/hints.rs` (the overlay, keys, and open/copy/insert). Local paths are checked against the shell's directory; SSH panes can't be checked, so only clear paths count there and picking one copies it.
 11. **Settings tab:** `settings.rs` (the list of settings and their controls, page state, keys, layout and drawing; testable without a window), `app/settings.rs` (opening the tab, writing with `config::write_setting`, the font picker's families from the renderer, and `$EDITOR` in the tab). A settings tab is a normal `Tab` with `settings: Some(page)`; its one pane runs an idle `sh` loop while the page shows, and `Pane::run` swaps in the editor and back (`settings_child_exited` ignores the old program's late "exited" with `Pane::is_running`). Two renderer fixes came with it: glyphs snap to whole pixels (UI text at half a cell was garbled), and the atlas is only cleared when the font really changed.
+12. **Power features (the "make it super useful" session):**
+    - Scrollback search (`search.rs`, `app/search.rs`), command palette (`commands.rs` over `palette.rs`), tab activity marks and desktop notifications (`notifications.rs`), multi-line paste confirmation.
+    - Split borders drag with the mouse (`layout::SplitBorder`, `TermWindow::split_drag`/`border_at`).
+    - Scrollback in a pager (`scrollback.rs`: ANSI export, temp file removed by the pager's `sh` or on exit).
+    - Broadcast input (`Tab::broadcast`, `Tab::input_peers`; each peer encodes keys with its own modes).
+    - ctrl+click file paths (`links::path_at` reuses `hints::scan_line`; `Pane::update_hover(cell, ctrl)`, refreshed on ctrl press/release).
+    - Command info on hover: `Row::ran` (`CommandRun`: duration + end time, timed 133;C → D), `Term::command_at_row`, `TermWindow::draw_command_info`.
+    - `ionterm @` remote control (`remote.rs` socket/client/parsing, `app/remote.rs` commands). Panes get `IONTERM_SOCKET`/`IONTERM_PANE`.
+    - Session restore (`session.rs`, `app/session.rs`), background image (`app/background.rs`, `Renderer::set_background`), cursor trail (`app/trail.rs`).
+    - Clear scrollback (`Term::clear_history` keeps the prompt being typed, moved to the top) and copy/open the current directory.
+    - Fixes: closing the last tab no longer panics (the window is dropped at once); SSH control sockets fall back to `$XDG_RUNTIME_DIR/ionterm-ssh` when the cache path is too long for a socket.
 
 ## Code map
 
@@ -169,13 +180,11 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
 
 ## Next tasks (from docs/PLAN.md)
 
-- **v0.3b power features:**
-  - Scrollback search.
-  - Done: background image (`app/background.rs`, `Renderer::set_background`), cursor trail (`app/trail.rs`).
+- **v0.3b:** all done (see item 12 above). Open idea: move the failed mark from the first line of a two-line prompt to the command line (asked the user, no answer yet).
 - **v0.2 leftovers:** kitty graphics animation (`a=f`, `a=a`, `a=c`), relative placements (`P`, `Q`).
 - **v0.4:**
   - Upstream `extras/ionix-styler` into `/home/ion/development/ionix/profile/airootfs/usr/local/share/ionix/styler/`, then make ionterm the Ionix default terminal (replace kitty in Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab's btop launcher).
   - Windows polish (own titlebar, installer).
   - `ionterm @` over a Windows named pipe (Unix socket done: `remote.rs`, `app/remote.rs`).
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
-- **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there. Reconnect after a dropped connection is still only tested against the fake-ssh setup.
+- **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there, and so do command info on hover, clear scrollback and `ionterm @ ls` (remote directory). Reconnect after a dropped connection is still only tested against the fake-ssh setup.
