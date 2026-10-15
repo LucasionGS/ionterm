@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod dialog;
+mod dnd;
 mod editor;
 mod files;
 mod input;
@@ -16,6 +17,7 @@ mod ssh;
 mod tab;
 mod tabbar;
 mod theme;
+mod zmodem;
 
 use std::process::ExitCode;
 

@@ -1,10 +1,13 @@
 //! Uploads and downloads: each runs on its own thread, streaming through an
 //! `ssh` child process, and reports progress to the event loop.
 //!
-//! Files stream through `cat`; folders as a tar archive, packed and unpacked
-//! here with the `tar` crate so no local `tar` is needed (Windows). Files land
-//! under a `.part` name first and are renamed when complete, so a cancelled or
-//! failed transfer never leaves a truncated file under the real name.
+//! When both ends have rsync (see `rsync.rs`), it does the work: it resumes
+//! interrupted transfers and only sends what changed. Otherwise files stream
+//! through `cat`, and folders as a tar archive, packed and unpacked here with
+//! the `tar` crate so no local `tar` is needed (Windows). Either way files
+//! land under a temporary name first and are renamed when complete, so a
+//! cancelled or failed transfer never leaves a truncated file under the real
+//! name.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -78,6 +81,8 @@ pub enum TransferState {
 
 #[derive(Debug)]
 pub enum TransferEvent {
+    /// The tool doing the work (`rsync`, `ssh`, `ZMODEM`).
+    Method(&'static str),
     /// Bytes moved so far, and the total once it's known.
     Progress(u64, Option<u64>),
     Finished(Result<(), String>),
@@ -95,6 +100,8 @@ pub struct Transfer {
     pub bytes: u64,
     pub total: Option<u64>,
     pub state: TransferState,
+    /// The tool doing the work, once chosen.
+    pub method: Option<&'static str>,
     /// Bytes per second, smoothed.
     pub speed: f64,
     last_sample: Option<(Instant, u64)>,
@@ -121,20 +128,36 @@ impl Transfer {
 
 /// Shared between a transfer's thread and the UI, so the UI can stop it.
 #[derive(Default)]
-struct Control {
+pub(super) struct Control {
     cancelled: AtomicBool,
-    child: Mutex<Option<Child>>,
+    pub(super) child: Mutex<Option<Child>>,
+    /// Stop the child with SIGTERM rather than SIGKILL, so it can tidy up
+    /// (rsync keeps its partial file where it can be found and removed).
+    pub(super) gentle: AtomicBool,
+    /// How to stop a transfer that isn't a child of ours (ZMODEM).
+    abort: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Control {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        if let Some(abort) = &self.abort {
+            abort();
+            return;
+        }
         if let Some(child) = self.child.lock().expect("transfer lock poisoned").as_mut() {
+            #[cfg(target_os = "linux")]
+            if self.gentle.load(Ordering::Acquire) {
+                let pid = rustix::process::Pid::from_child(child);
+                if rustix::process::kill_process(pid, rustix::process::Signal::TERM).is_ok() {
+                    return;
+                }
+            }
             let _ = child.kill();
         }
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(super) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 }
@@ -146,6 +169,16 @@ pub struct Finished {
     pub remote_path: String,
     pub local_path: PathBuf,
     pub ok: bool,
+}
+
+/// A transfer carried out elsewhere (a ZMODEM session in a pane) but shown
+/// in the list with the others.
+pub struct External {
+    pub direction: Direction,
+    pub name: String,
+    pub local_path: PathBuf,
+    pub total: Option<u64>,
+    pub method: &'static str,
 }
 
 /// Every transfer in the window: queued, running and recently finished.
@@ -179,6 +212,7 @@ impl Transfers {
             bytes: 0,
             total: None,
             state: TransferState::Queued,
+            method: None,
             speed: 0.0,
             last_sample: None,
             finished_at: None,
@@ -189,9 +223,43 @@ impl Transfers {
         id
     }
 
+    /// Lists a transfer that something else carries out (a ZMODEM session in
+    /// a pane), reported through `event`. `abort` stops it.
+    pub fn add_external(&mut self, pane: PaneId, external: External, abort: impl Fn() + Send + Sync + 'static) -> TransferId {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.list.push(Transfer {
+            id,
+            pane,
+            remote_path: external.name.clone(),
+            name: external.name,
+            direction: external.direction,
+            is_dir: false,
+            local_path: external.local_path,
+            bytes: 0,
+            total: external.total,
+            state: TransferState::Running,
+            method: Some(external.method),
+            speed: 0.0,
+            last_sample: Some((Instant::now(), 0)),
+            finished_at: None,
+            spec: None,
+            control: Arc::new(Control {
+                abort: Some(Box::new(abort)),
+                ..Control::default()
+            }),
+        });
+        id
+    }
+
     /// Starts queued transfers while there are free slots.
     fn pump(&mut self) {
-        let mut running = self.list.iter().filter(|t| t.state == TransferState::Running).count();
+        // External transfers don't take a slot: they aren't ours to queue.
+        let mut running = self
+            .list
+            .iter()
+            .filter(|t| t.state == TransferState::Running && t.control.abort.is_none())
+            .count();
         for transfer in &mut self.list {
             if running >= MAX_RUNNING {
                 break;
@@ -231,6 +299,10 @@ impl Transfers {
     pub fn event(&mut self, id: TransferId, event: TransferEvent) -> Option<Finished> {
         let transfer = self.list.iter_mut().find(|t| t.id == id)?;
         match event {
+            TransferEvent::Method(method) => {
+                transfer.method = Some(method);
+                None
+            }
             TransferEvent::Progress(bytes, total) => {
                 let now = Instant::now();
                 if let Some((at, before)) = transfer.last_sample {
@@ -301,15 +373,16 @@ impl Drop for Transfers {
 
 //#region Worker
 
-/// Reports progress (bytes so far, total when known), throttled.
-struct Reporter {
-    send: Box<dyn FnMut(u64, Option<u64>) + Send>,
-    total: Option<u64>,
+/// Reports progress (bytes so far, total when known), throttled, and which
+/// tool does the work.
+pub(super) struct Reporter {
+    send: Box<dyn FnMut(TransferEvent) + Send>,
+    pub(super) total: Option<u64>,
     last: Option<Instant>,
 }
 
 impl Reporter {
-    fn new(send: impl FnMut(u64, Option<u64>) + Send + 'static) -> Self {
+    fn new(send: impl FnMut(TransferEvent) + Send + 'static) -> Self {
         Self {
             send: Box::new(send),
             total: None,
@@ -317,19 +390,23 @@ impl Reporter {
         }
     }
 
-    fn report(&mut self, bytes: u64, force: bool) {
+    pub(super) fn method(&mut self, method: &'static str) {
+        (self.send)(TransferEvent::Method(method));
+    }
+
+    pub(super) fn report(&mut self, bytes: u64, force: bool) {
         let now = Instant::now();
         if force || self.last.is_none_or(|at| now.duration_since(at) >= PROGRESS_INTERVAL) {
             self.last = Some(now);
-            (self.send)(bytes, self.total);
+            (self.send)(TransferEvent::Progress(bytes, self.total));
         }
     }
 }
 
 fn run(id: TransferId, spec: TransferSpec, control: Arc<Control>, proxy: EventLoopProxy<UserEvent>) {
     let progress = proxy.clone();
-    let mut reporter = Reporter::new(move |bytes, total| {
-        let _ = progress.send_event(UserEvent::Transfer(id, TransferEvent::Progress(bytes, total)));
+    let mut reporter = Reporter::new(move |event| {
+        let _ = progress.send_event(UserEvent::Transfer(id, event));
     });
     let result = transfer(&spec, &control, &mut reporter);
     let _ = proxy.send_event(UserEvent::Transfer(id, TransferEvent::Finished(result)));
@@ -337,11 +414,12 @@ fn run(id: TransferId, spec: TransferSpec, control: Arc<Control>, proxy: EventLo
 
 /// Runs a transfer to the end on the current thread.
 fn transfer(spec: &TransferSpec, control: &Control, reporter: &mut Reporter) -> Result<(), String> {
-    let result = match (spec.direction, spec.is_dir) {
-        (Direction::Download, false) => download_file(spec, control, reporter),
-        (Direction::Download, true) => download_folder(spec, control, reporter),
-        (Direction::Upload, false) => upload_file(spec, control, reporter),
-        (Direction::Upload, true) => upload_folder(spec, control, reporter),
+    let result = if super::rsync::usable(&spec.remote) {
+        reporter.method("rsync");
+        super::rsync::transfer(spec, control, reporter)
+    } else {
+        reporter.method("ssh");
+        stream(spec, control, reporter)
     };
     match result {
         Err(_) if control.is_cancelled() => Err("Cancelled.".into()),
@@ -349,8 +427,18 @@ fn transfer(spec: &TransferSpec, control: &Control, reporter: &mut Reporter) -> 
     }
 }
 
+/// A transfer through `cat` or `tar` over ssh.
+fn stream(spec: &TransferSpec, control: &Control, reporter: &mut Reporter) -> Result<(), String> {
+    match (spec.direction, spec.is_dir) {
+        (Direction::Download, false) => download_file(spec, control, reporter),
+        (Direction::Download, true) => download_folder(spec, control, reporter),
+        (Direction::Upload, false) => upload_file(spec, control, reporter),
+        (Direction::Upload, true) => upload_folder(spec, control, reporter),
+    }
+}
+
 /// Registers a child so cancelling kills it. Fails if already cancelled.
-fn adopt(control: &Control, child: Child) -> Result<(), String> {
+pub(super) fn adopt(control: &Control, child: Child) -> Result<(), String> {
     let mut slot = control.child.lock().expect("transfer lock poisoned");
     *slot = Some(child);
     if control.is_cancelled() {
@@ -362,7 +450,7 @@ fn adopt(control: &Control, child: Child) -> Result<(), String> {
     Ok(())
 }
 
-fn take_stdout(control: &Control) -> Option<std::process::ChildStdout> {
+pub(super) fn take_stdout(control: &Control) -> Option<std::process::ChildStdout> {
     control.child.lock().expect("transfer lock poisoned").as_mut()?.stdout.take()
 }
 
@@ -372,7 +460,12 @@ fn take_stdin(control: &Control) -> Option<std::process::ChildStdin> {
 
 /// Waits for the child and turns a failure into its error message. Polls
 /// rather than blocking in `wait`, so cancelling can take the lock to kill it.
-fn finish_child(control: &Control) -> Result<(), String> {
+pub(super) fn finish_child(control: &Control) -> Result<(), String> {
+    finish_child_with(control, remote::child_error)
+}
+
+/// `finish_child`, with the child's own way of explaining a failure.
+pub(super) fn finish_child_with(control: &Control, describe: fn(&mut Child, Option<i32>) -> String) -> Result<(), String> {
     loop {
         {
             let mut slot = control.child.lock().expect("transfer lock poisoned");
@@ -381,7 +474,7 @@ fn finish_child(control: &Control) -> Result<(), String> {
                 if control.is_cancelled() {
                     return Err("Cancelled.".into());
                 }
-                return if status.success() { Ok(()) } else { Err(remote::child_error(child, status.code())) };
+                return if status.success() { Ok(()) } else { Err(describe(child, status.code())) };
             }
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -531,7 +624,7 @@ fn upload_folder(spec: &TransferSpec, control: &Control, reporter: &mut Reporter
 
 /// Asks the server for a regular file's size (`None` when it can't tell;
 /// devices and pipes have no size, and counting them would never end).
-fn remote_size(remote: &Remote, path: &str) -> Option<u64> {
+pub(super) fn remote_size(remote: &Remote, path: &str) -> Option<u64> {
     let path = remote::quote(path);
     let output = remote.run(&format!("[ -f {path} ] && exec wc -c < {path}")).ok()?;
     String::from_utf8_lossy(&output).trim().parse().ok()
@@ -667,10 +760,11 @@ mod tests {
     }
 
     /// Runs a transfer against a "remote" that is `argv` + a shell command.
-    fn run_with(argv: &[&str], direction: Direction, remote_path: &str, local_path: &Path, is_dir: bool) -> Result<u64, String> {
+    /// `stream_only` skips rsync even where it could be used.
+    fn run_with(argv: &[&str], stream_only: bool, direction: Direction, remote_path: &str, local_path: &Path, is_dir: bool) -> Result<u64, String> {
         let spec = TransferSpec {
             direction,
-            remote: Remote::with_argv(argv.iter().map(|s| s.to_string()).collect()),
+            remote: test_remote(argv),
             remote_path: remote_path.into(),
             local_path: local_path.into(),
             is_dir,
@@ -678,14 +772,30 @@ mod tests {
         };
         let moved = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let seen = moved.clone();
-        let mut reporter = Reporter::new(move |bytes, _| seen.store(bytes, Ordering::Relaxed));
-        transfer(&spec, &Control::default(), &mut reporter).map(|()| moved.load(Ordering::Relaxed))
+        let mut reporter = Reporter::new(move |event| {
+            if let TransferEvent::Progress(bytes, _) = event {
+                seen.store(bytes, Ordering::Relaxed);
+            }
+        });
+        let control = Control::default();
+        let result = if stream_only { stream(&spec, &control, &mut reporter) } else { transfer(&spec, &control, &mut reporter) };
+        result.map(|()| moved.load(Ordering::Relaxed))
+    }
+
+    /// `ssh … -- host` argv make a remote like a real connection's (one rsync
+    /// can use); anything else, a plain command remote.
+    fn test_remote(argv: &[&str]) -> Remote {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        match argv.as_slice() {
+            [.., separator, host] if separator == "--" => Remote::with_alias(host, argv.clone()),
+            _ => Remote::with_argv(argv),
+        }
     }
 
     /// Uploads and downloads a file and a folder through `argv`, using
     /// `remote_dir` on the other side.
-    fn round_trip(argv: &[&str], remote_dir: &str) {
-        let base = std::env::temp_dir().join(format!("ionterm-rt-{}-{}", std::process::id(), argv.len()));
+    fn round_trip(argv: &[&str], stream_only: bool, remote_dir: &str) {
+        let base = std::env::temp_dir().join(format!("ionterm-rt-{}-{}-{stream_only}", std::process::id(), argv.len()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("tree/sub dir")).unwrap();
         let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
@@ -696,17 +806,17 @@ mod tests {
         std::os::unix::fs::symlink("b.txt", base.join("tree/link")).unwrap();
 
         let remote_file = format!("{remote_dir}/it's big.bin");
-        let sent = run_with(argv, Direction::Upload, &remote_file, &base.join("it's big.bin"), false).unwrap();
+        let sent = run_with(argv, stream_only, Direction::Upload, &remote_file, &base.join("it's big.bin"), false).unwrap();
         assert_eq!(sent, data.len() as u64);
         let back = base.join("back.bin");
-        run_with(argv, Direction::Download, &remote_file, &back, false).unwrap();
+        run_with(argv, stream_only, Direction::Download, &remote_file, &back, false).unwrap();
         assert_eq!(std::fs::read(&back).unwrap(), data);
         assert!(!part_path(&back).exists());
 
         let remote_tree = format!("{remote_dir}/tree copy");
-        run_with(argv, Direction::Upload, &remote_tree, &base.join("tree"), true).unwrap();
+        run_with(argv, stream_only, Direction::Upload, &remote_tree, &base.join("tree"), true).unwrap();
         let tree_back = base.join("tree back");
-        run_with(argv, Direction::Download, &remote_tree, &tree_back, true).unwrap();
+        run_with(argv, stream_only, Direction::Download, &remote_tree, &tree_back, true).unwrap();
         assert_eq!(std::fs::read(tree_back.join("sub dir/a.txt")).unwrap(), b"hello");
         assert_eq!(std::fs::read(tree_back.join("b.txt")).unwrap(), b"bee");
         #[cfg(unix)]
@@ -714,7 +824,7 @@ mod tests {
 
         // A missing remote file fails cleanly and leaves nothing behind.
         let missing = base.join("missing");
-        let error = run_with(argv, Direction::Download, &format!("{remote_dir}/nope"), &missing, false).unwrap_err();
+        let error = run_with(argv, stream_only, Direction::Download, &format!("{remote_dir}/nope"), &missing, false).unwrap_err();
         assert!(error.contains("nope") || error.contains("No such"), "{error}");
         assert!(!missing.exists() && !part_path(&missing).exists());
         let _ = std::fs::remove_dir_all(&base);
@@ -724,7 +834,7 @@ mod tests {
     fn round_trips_through_a_local_shell() {
         let dir = std::env::temp_dir().join(format!("ionterm-remote-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        round_trip(&["sh", "-c"], dir.to_str().unwrap());
+        round_trip(&["sh", "-c"], true, dir.to_str().unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -734,11 +844,50 @@ mod tests {
     #[ignore]
     fn round_trips_over_ssh() {
         let Ok(host) = std::env::var("IONTERM_TEST_HOST") else { return };
-        let argv = ["ssh", "-o", "BatchMode=yes", "-T", host.as_str()];
+        let argv = ["ssh", "-o", "BatchMode=yes", "-T", "--", host.as_str()];
         let dir = format!("/tmp/ionterm-test-{}", std::process::id());
-        let remote = Remote::with_argv(argv.iter().map(|s| s.to_string()).collect());
+        let remote = test_remote(&argv);
         remote.mkdir(&dir).unwrap();
-        round_trip(&argv, &dir);
+        // rsync where the host has it, then the cat/tar fallback.
+        eprintln!("rsync usable: {}", super::super::rsync::usable(&remote));
+        round_trip(&argv, false, &dir);
+        remote.delete(&[format!("{dir}/it's big.bin"), format!("{dir}/tree copy")]).unwrap();
+        round_trip(&argv, true, &dir);
+
+        // Cancelling rsync halfway leaves no partial file on either side.
+        let big = format!("{dir}/big.bin");
+        remote.run(&format!("head -c 300000000 /dev/urandom > {}", remote::quote(&big))).unwrap();
+        let local = std::env::temp_dir().join(format!("ionterm-rsync-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&local).unwrap();
+        let cancel = |direction, remote_path: &str, local_path: PathBuf| {
+            let control = Arc::new(Control::default());
+            let stopper = control.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(700));
+                stopper.cancel();
+            });
+            let spec = TransferSpec {
+                direction,
+                remote: remote.clone(),
+                remote_path: remote_path.into(),
+                local_path,
+                is_dir: false,
+                merge: false,
+            };
+            let mut reporter = Reporter::new(|_| {});
+            transfer(&spec, &control, &mut reporter)
+        };
+        let down = local.join("big.bin");
+        assert_eq!(cancel(Direction::Download, &big, down.clone()), Err("Cancelled.".into()));
+        let leftovers: Vec<_> = std::fs::read_dir(&local).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+        std::fs::write(&down, vec![7u8; 300_000_000]).unwrap();
+        let up = format!("{dir}/up.bin");
+        assert_eq!(cancel(Direction::Upload, &up, down), Err("Cancelled.".into()));
+        let listing = remote.run(&format!("ls -A {}", remote::quote(&dir))).unwrap();
+        let listing = String::from_utf8_lossy(&listing);
+        assert!(!listing.lines().any(|l| l == "up.bin" || l == ".ionterm-partial"), "left behind: {listing}");
+        let _ = std::fs::remove_dir_all(&local);
         remote.delete(&[dir]).unwrap();
     }
 
@@ -759,7 +908,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             stopper.cancel();
         });
-        let mut reporter = Reporter::new(|_, _| {});
+        let mut reporter = Reporter::new(|_| {});
         let result = transfer(&spec, &control, &mut reporter);
         assert_eq!(result, Err("Cancelled.".into()));
         assert!(!spec.local_path.exists() && !part_path(&spec.local_path).exists());

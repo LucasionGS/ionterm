@@ -127,7 +127,9 @@ impl TermWindow {
             }
         }
         let area = self.content_area();
-        if let Some((rect, layouts, more)) = self.card_layout(area) {
+        let card = self.card_layout(area);
+        let card_rect = card.as_ref().map(|(rect, _, _)| *rect);
+        if let Some((rect, layouts, more)) = card {
             let bg = theme.background.0;
             let fg = theme.foreground.0;
             let card_bg = mix(bg, fg, 0.08);
@@ -161,7 +163,7 @@ impl TermWindow {
             }
         }
         if let Some((message, _)) = &self.toast {
-            draw_toast(message, area, theme, m, scale, out);
+            draw_toast(message, area, card_rect, theme, m, scale, out);
         }
     }
 
@@ -235,7 +237,8 @@ fn card_target(layouts: &[TransferLayout], x: f32, y: f32) -> Option<Target> {
     })
 }
 
-fn draw_toast(message: &str, area: Rect, theme: &Theme, m: CellMetrics, scale: f32, out: &mut Vec<ChromeItem>) {
+/// A message centred at the bottom, above the transfer card if they'd meet.
+fn draw_toast(message: &str, area: Rect, card: Option<Rect>, theme: &Theme, m: CellMetrics, scale: f32, out: &mut Vec<ChromeItem>) {
     let bg = theme.background.0;
     let fg = theme.foreground.0;
     let toast_bg = mix(bg, fg, 0.12);
@@ -244,7 +247,14 @@ fn draw_toast(message: &str, area: Rect, theme: &Theme, m: CellMetrics, scale: f
     let width = (text_columns(&text) as f32 + 3.0) * m.width;
     let height = (m.height * 1.9).round();
     let x = (area.x + (area.width - width) / 2.0).round();
-    let y = (area.y + area.height - height - (16.0 * scale).round()).round();
+    let gap = (16.0 * scale).round();
+    let mut y = (area.y + area.height - height - gap).round();
+    if let Some(card) = card
+        && x + width > card.x
+        && x < card.x + card.width
+    {
+        y = y.min(card.y - height - (8.0 * scale).round());
+    }
     out.push(ChromeItem::RoundedRect {
         rect: [x, y, width, height],
         radius: (height / 2.0).round(),
@@ -424,6 +434,7 @@ impl App {
                     panel.focused = false;
                 }
             }
+            Request::Follow => self.follow_cwd(tab, pane),
         }
     }
 
@@ -457,9 +468,58 @@ impl App {
         self.start_transfers(pane, specs, HashSet::new());
     }
 
-    /// Uploads local files and folders into a remote folder, after looking
-    /// up which names are already taken there.
-    pub(super) fn upload(&mut self, pane: PaneId, remote: Remote, dir: String, paths: Vec<PathBuf>) {
+    /// Downloads one remote path, for `ionterm-get`.
+    fn download_path(&mut self, pane: PaneId, remote: Remote, path: &str, is_dir: bool) {
+        let (dir, name) = match path.trim_end_matches('/').rsplit_once('/') {
+            Some(("", name)) => ("/".to_string(), name.to_string()),
+            Some((dir, name)) => (dir.to_string(), name.to_string()),
+            None => return,
+        };
+        if name.is_empty() {
+            return;
+        }
+        let entry = Entry {
+            name,
+            kind: if is_dir { remote::EntryKind::Dir } else { remote::EntryKind::File },
+            size: 0,
+            mtime: None,
+            mode: String::new(),
+            owner: String::new(),
+            target: None,
+        };
+        self.queue_downloads(pane, remote, &dir, vec![entry]);
+    }
+
+    /// `ionterm-get` or `ionterm-put` in a pane's remote shell. Only
+    /// connections ionterm opened have these commands, and only their
+    /// requests are followed.
+    pub(super) fn file_request(&mut self, pane: PaneId, request: ionterm_vt::FileRequest) {
+        let proxy = self.proxy.clone();
+        let Some(w) = &mut self.window else { return };
+        let Some(connection) = w
+            .tabs
+            .iter()
+            .flat_map(|t| &t.panes)
+            .find(|p| p.id == pane)
+            .and_then(|p| p.connection.as_ref())
+            .filter(|c| c.managed)
+        else {
+            return;
+        };
+        let remote = Remote::new(connection);
+        match request {
+            ionterm_vt::FileRequest::Get { path, dir } => {
+                let name = path.rsplit('/').next().unwrap_or_default().to_string();
+                w.show_toast(format!("Downloading {name}"));
+                self.download_path(pane, remote, &path, dir);
+            }
+            ionterm_vt::FileRequest::Put { dir } => files::pick(proxy, pane, dir, false),
+        }
+    }
+
+    /// Uploads local files and folders into a remote folder (`None` = the
+    /// remote home), after looking up which names are already taken there.
+    pub(super) fn upload(&mut self, pane: PaneId, remote: Remote, dir: Option<String>, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
@@ -661,9 +721,20 @@ impl App {
                 self.start_transfers(pane, specs, taken);
             }
             FilesEvent::Picked { pane, dir, paths } => {
-                let Some(remote) = w.panel_for(pane).map(|p| p.remote.clone()) else { return };
-                self.upload(pane, remote, dir, paths);
+                // From the panel, or from `ionterm-put` with no panel open.
+                let remote = w.panel_for(pane).map(|p| p.remote.clone()).or_else(|| {
+                    w.tabs
+                        .iter()
+                        .flat_map(|t| &t.panes)
+                        .find(|p| p.id == pane)
+                        .and_then(|p| p.connection.as_ref())
+                        .filter(|c| c.managed)
+                        .map(Remote::new)
+                });
+                let Some(remote) = remote else { return };
+                self.upload(pane, remote, Some(dir), paths);
             }
+            FilesEvent::ZmodemPicked { pane, paths } => self.zmodem_picked(pane, paths),
         }
     }
 
@@ -822,7 +893,9 @@ impl App {
         }
     }
 
-    /// The remote shell changed directory: a following panel goes along.
+    /// The remote shell reported its directory (after every command, or
+    /// following was just turned on): a following panel shows it, even
+    /// when the panel was browsed elsewhere meanwhile.
     pub(super) fn follow_cwd(&mut self, tab: usize, pane: PaneId) {
         let Some(w) = &self.window else { return };
         let Some(t) = w.tabs.get(tab) else { return };

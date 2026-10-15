@@ -3,8 +3,11 @@
 //! portable-pty gives one API over Unix PTYs and Windows ConPTY. Each pane
 //! gets a reader thread that parses output straight into the shared [`Term`]
 //! and nudges the event loop, coalescing nudges so a flood of output costs one
-//! redraw per frame rather than one per read.
+//! redraw per frame rather than one per read. When `sz` or `rz` starts a
+//! ZMODEM transfer, the reader hands the bytes to a [`zmodem::Session`]
+//! instead, until it's over.
 
+use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +21,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::app::UserEvent;
 use crate::config::TerminalConfig;
 use crate::layout::PaneId;
+use crate::zmodem;
 
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -28,6 +32,7 @@ pub struct OutputSink {
     pub term: Arc<Mutex<Term>>,
     pub proxy: EventLoopProxy<UserEvent>,
     pub wakeup_pending: Arc<AtomicBool>,
+    pub zmodem: Arc<zmodem::Shared>,
 }
 
 pub struct Pty {
@@ -49,6 +54,7 @@ impl Pty {
             term,
             proxy,
             wakeup_pending,
+            zmodem,
         } = sink;
         let pair = native_pty_system().openpty(size).context("opening a PTY")?;
 
@@ -86,6 +92,8 @@ impl Pty {
             .name("pty-reader".into())
             .spawn(move || {
                 let mut processor = Processor::new();
+                let mut detector = zmodem::Detector::default();
+                let mut session: Option<zmodem::Session> = None;
                 let mut buf = vec![0u8; 64 * 1024];
                 // Debugging aid: IONTERM_DUMP=<file> records the raw output.
                 let mut dump = std::env::var_os("IONTERM_DUMP").and_then(|path| {
@@ -104,11 +112,32 @@ impl Pty {
                     if let Some(file) = &mut dump {
                         let _ = file.write_all(&buf[..n]);
                     }
-                    let replies = {
-                        let mut term = term.lock().expect("terminal lock poisoned");
-                        processor.advance(&mut term, &buf[..n]);
-                        term.take_output()
-                    };
+                    let mut replies = Vec::new();
+                    let mut data = Cow::Borrowed(&buf[..n]);
+                    loop {
+                        if let Some(active) = &mut session {
+                            match active.feed(&data) {
+                                // Over: the rest is the shell's again.
+                                Some(rest) => {
+                                    session = None;
+                                    data = Cow::Owned(rest);
+                                }
+                                None => break,
+                            }
+                        }
+                        let (shown, found) = detector.scan(&data);
+                        if !shown.is_empty() {
+                            let mut term = term.lock().expect("terminal lock poisoned");
+                            processor.advance(&mut term, &shown);
+                            replies.extend(term.take_output());
+                        }
+                        let Some(start) = found else { break };
+                        let events = proxy.clone();
+                        session = Some(zmodem::Session::new(start.role, reply_writer.clone(), zmodem.clone(), move |event| {
+                            let _ = events.send_event(UserEvent::Zmodem(pane, event));
+                        }));
+                        data = Cow::Owned(start.bytes);
+                    }
                     if !replies.is_empty() {
                         let mut writer = reply_writer.lock().expect("writer lock poisoned");
                         let _ = writer.write_all(&replies);
@@ -117,6 +146,9 @@ impl Pty {
                     if !wakeup_pending.swap(true, Ordering::AcqRel) && proxy.send_event(UserEvent::Wakeup(pane)).is_err() {
                         break;
                     }
+                }
+                if let Some(mut active) = session {
+                    active.abandon();
                 }
                 let _ = proxy.send_event(UserEvent::ChildExited(pane));
             })
@@ -127,6 +159,11 @@ impl Pty {
             writer,
             child,
         })
+    }
+
+    /// The PTY's input, shared with whoever else writes to it.
+    pub fn writer(&self) -> SharedWriter {
+        self.writer.clone()
     }
 
     pub fn write(&self, bytes: &[u8]) {

@@ -184,8 +184,10 @@ Phase 2: managing connections
 
 Phase 3: files
 - [x] File panel (`ctrl+shift+o` or "Files…" in the tab menu): browse over the shared connection, follow the shell's directory, type to filter, upload (system file picker), download to Downloads, rename, delete, new folder, progress with cancel, Overwrite / Rename / Skip on name conflicts. Only for connections ionterm opened.
-- [ ] Drag and drop files onto an SSH tab to upload to the shell's remote directory
-- [ ] ZMODEM (`sz`/`rz`) when the server has lrzsz, with SFTP as the fallback
+- [x] Drag and drop: files dropped on an SSH pane upload to the shell's remote directory (or the folder open in the file panel, when dropped there); on a local pane their quoted paths are typed in. Wayland drops come through ionterm's own `wl_data_device` (winit 0.30 has none)
+- [x] Transfers use rsync when both ends have it (resumes, sends only changes), else `cat`/`tar` over the shared connection
+- [x] ZMODEM: `sz` and `rz` in a pane are handled natively (no local lrzsz needed), with progress and clean cancelling; files dropped on a typed-`ssh` pane go to the next `rz`
+- [x] `ionterm-get <file>` / `ionterm-put [dir]` on the server (installed per session by the bootstrap): download or upload without lrzsz
 
 ### v0.3b: other power features
 - Shell integration (fish/bash/zsh): jump between prompts (OSC 133 marks are already tracked), select command output, OSC 7 cwd for new tabs/splits

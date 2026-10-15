@@ -1,7 +1,9 @@
 //! The winit application: owns the window and its tabs of panes, and routes
 //! events between the window system, the panes and the renderer.
 
+mod drag;
 mod files;
+mod rzsz;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,8 +25,10 @@ use crate::config::{
     CONFIG_FILE, Config, CursorShapeConfig, Decorations, FontConfig, ShowTabBar, THEME_FILE, TabBarEdge, config_dir,
 };
 use crate::dialog::{self, Answer, Dialog};
+use crate::dnd::{self, DragEvent};
+use crate::zmodem;
 use crate::files::FilesEvent;
-use crate::files::transfer::{TransferEvent, TransferId, Transfers};
+use crate::files::transfer::{self, TransferEvent, TransferId, Transfers};
 use crate::input::{self, Action, KeyCombo, MouseAction, MouseButton};
 use crate::layout::{self, Direction, PaneId, Rect};
 use crate::links;
@@ -63,6 +67,11 @@ pub enum UserEvent {
     Files(FilesEvent),
     /// An upload or download moved along or finished.
     Transfer(TransferId, TransferEvent),
+    /// Files dragged over the window, where winit doesn't report them.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Drag(DragEvent),
+    /// A ZMODEM transfer in a pane moved along.
+    Zmodem(PaneId, zmodem::Event),
 }
 
 pub struct App {
@@ -124,6 +133,14 @@ struct TermWindow {
     toast: Option<(String, Instant)>,
     /// The transfer card button under the mouse.
     card_hover: Option<crate::files::panel::Target>,
+    /// Listens for file drops on Wayland; stopped before the display closes.
+    drops: Option<dnd::Listener>,
+    /// Where files are being dragged over the window, while they are.
+    file_drag: Option<PhysicalPosition<f64>>,
+    /// Files winit dropped one by one (X11, Windows), handed over together.
+    dropped: Vec<PathBuf>,
+    /// The transfer-list entry of each pane's current ZMODEM file.
+    zmodem_transfers: HashMap<PaneId, TransferId>,
 }
 
 struct TabDrag {
@@ -271,7 +288,12 @@ impl App {
             transfers: Transfers::new(self.proxy.clone()),
             toast: None,
             card_hover: None,
+            drops: None,
+            file_drag: None,
+            dropped: Vec::new(),
+            zmodem_transfers: HashMap::new(),
         };
+        w.drops = dnd::listen(&w.window, self.proxy.clone());
         w.relayout(&self.config, false);
         Ok(w)
     }
@@ -288,7 +310,8 @@ impl App {
     ) -> anyhow::Result<Pane> {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
-        Pane::spawn(id, &self.config.terminal, connection, cwd, self.theme.palette(), metrics, self.proxy.clone())
+        let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
+        Pane::spawn(id, &self.config.terminal, connection, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem)
     }
 
     /// The command to connect to an ssh config host.
@@ -471,7 +494,9 @@ impl App {
         }
         w.renderer.set_style(style);
         w.renderer.set_font(font_options(&self.config.font, w.font_size, w.scale_factor));
+        let downloads = transfer::download_dir(&self.config.files.download_dir);
         for pane in w.tabs.iter().flat_map(|t| &t.panes) {
+            pane.zmodem.set_download_dir(downloads.clone());
             let mut term = pane.lock();
             term.set_palette(self.theme.palette());
             term.set_scrollback_limit(self.config.terminal.scrollback_lines);
@@ -873,7 +898,8 @@ impl App {
         let mut clipboard = None;
         let mut title_changed = false;
         let mut bell = false;
-        let mut cwd_changed = false;
+        let mut remote_cwd = false;
+        let mut file_requests = Vec::new();
         for event in events {
             match event {
                 TermEvent::Title(title) => {
@@ -882,12 +908,9 @@ impl App {
                 }
                 TermEvent::Bell => bell = true,
                 TermEvent::ClipboardStore(text) => clipboard = Some(text),
-                TermEvent::Cwd(url) => {
-                    let before = pane.remote_cwd.clone();
-                    pane.report_cwd(&url, &self.local_host);
-                    cwd_changed |= pane.remote_cwd != before;
-                }
+                TermEvent::Cwd(url) => remote_cwd |= pane.report_cwd(&url, &self.local_host),
                 TermEvent::SyncEnd => redraw |= shown,
+                TermEvent::FileRequest(request) => file_requests.push(request),
             }
         }
         if title_changed {
@@ -905,8 +928,13 @@ impl App {
         if let Some(text) = clipboard {
             self.set_clipboard(text, false);
         }
-        if cwd_changed {
+        // Shells report after every command, not only after a `cd`, so a
+        // panel browsed elsewhere comes back once the terminal is used.
+        if remote_cwd {
             self.follow_cwd(tab_index, id);
+        }
+        for request in file_requests {
+            self.file_request(id, request);
         }
     }
 
@@ -1759,6 +1787,7 @@ impl TermWindow {
             );
         }
         self.draw_files(theme, &mut items);
+        self.draw_drag(theme, &mut items);
         if let Some(open) = &self.menu {
             let layout = menu::layout(open, theme, m, scale, self.window_rect());
             menu::draw(open, &layout, theme, m, scale, &mut items);
@@ -2023,6 +2052,17 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                // Keys would corrupt a ZMODEM transfer; ctrl+c or Escape stops it.
+                if pane.zmodem.is_active() {
+                    let stop = event.logical_key == Key::Named(NamedKey::Escape)
+                        || (mods.control_key() && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("c")));
+                    if event.state == ElementState::Pressed && stop {
+                        let id = pane.id;
+                        w.cancel_zmodem(id);
+                        w.show_toast("Cancelling the transfer…");
+                    }
+                    return;
+                }
                 let (mode, flags) = {
                     let term = pane.lock();
                     (term.mode(), term.keyboard_flags())
@@ -2039,6 +2079,13 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => self.handle_mouse_button(button, state),
             WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(position),
+            WindowEvent::HoveredFile(_) => self.drag_event(DragEvent::Hover(None)),
+            WindowEvent::HoveredFileCancelled => self.drag_event(DragEvent::Left),
+            WindowEvent::DroppedFile(path) => {
+                if let Some(w) = &mut self.window {
+                    w.dropped.push(path);
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 if let Some(w) = &mut self.window {
                     let mut redraw = false;
@@ -2067,6 +2114,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ConfigChanged => self.reload_at = Some(Instant::now() + RELOAD_DEBOUNCE),
             UserEvent::Files(event) => self.files_event(event),
             UserEvent::Transfer(id, event) => self.transfer_event(id, event),
+            UserEvent::Drag(event) => self.drag_event(event),
+            UserEvent::Zmodem(pane, event) => self.zmodem_event(pane, event),
         }
     }
 
@@ -2075,6 +2124,7 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        self.flush_dropped();
         let now = Instant::now();
         if self.reload_at.is_some_and(|at| at <= now) {
             self.reload_at = None;
@@ -2119,5 +2169,13 @@ impl ApplicationHandler<UserEvent> for App {
             Some(at) => ControlFlow::WaitUntil(at),
             None => ControlFlow::Wait,
         });
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The drop listener shares winit's Wayland connection: stop its
+        // thread now, while the connection is still open.
+        if let Some(w) = &mut self.window {
+            w.drops = None;
+        }
     }
 }

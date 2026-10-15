@@ -87,6 +87,18 @@ pub enum TermEvent {
     Cwd(String),
     /// Mode 2026 ended, so a deferred frame can be drawn now.
     SyncEnd,
+    /// OSC 5379, ionterm's own: the remote shell's `ionterm-get` or
+    /// `ionterm-put` asks for a download or an upload.
+    FileRequest(FileRequest),
+}
+
+/// What `ionterm-get` and `ionterm-put` ask for, with absolute remote paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileRequest {
+    /// Download this file (`dir` = it's a folder).
+    Get { path: String, dir: bool },
+    /// Choose local files and upload them into this folder.
+    Put { dir: String },
 }
 
 #[derive(Clone, Debug)]
@@ -1645,6 +1657,22 @@ impl Perform for Term {
                 let first = code.parse().expect("matched digits");
                 self.osc_dynamic_colors(first, &params[1..], bell_terminated);
             }
+            "5379" => {
+                // OSC 5379 ; get | get-dir | put ; <base64 path>
+                let path = params.get(2).and_then(|p| base64::decode(p)).map(|b| String::from_utf8_lossy(&b).into_owned());
+                let request = match (params.get(1).copied(), path) {
+                    (Some(b"get"), Some(path)) => Some(FileRequest::Get { path, dir: false }),
+                    (Some(b"get-dir"), Some(path)) => Some(FileRequest::Get { path, dir: true }),
+                    (Some(b"put"), Some(dir)) => Some(FileRequest::Put { dir }),
+                    _ => None,
+                };
+                if let Some(request) = request.filter(|r| match r {
+                    FileRequest::Get { path, .. } => path.starts_with('/'),
+                    FileRequest::Put { dir } => dir.starts_with('/'),
+                }) {
+                    self.events.push(TermEvent::FileRequest(request));
+                }
+            }
             "52" => {
                 // OSC 52 ; <selection> ; <base64 | ?>. Reading the clipboard
                 // back is not allowed: any program could exfiltrate it.
@@ -2108,6 +2136,24 @@ mod tests {
 
     fn line(term: &Term, row: usize) -> String {
         term.grid[row].cells.iter().map(|c| c.c).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn file_requests_need_absolute_paths() {
+        let (mut t, mut p) = term(20, 3);
+        // "/etc/hostname", "/srv/my dir", and a relative "etc".
+        p.advance(&mut t, b"\x1b]5379;get;L2V0Yy9ob3N0bmFtZQ==\x07\x1b]5379;put;L3Nydi9teSBkaXI=\x1b\\");
+        p.advance(&mut t, b"\x1b]5379;get-dir;ZXRj\x07\x1b]5379;run;L2Jpbg==\x07");
+        assert_eq!(
+            t.take_events(),
+            vec![
+                TermEvent::FileRequest(FileRequest::Get {
+                    path: "/etc/hostname".into(),
+                    dir: false
+                }),
+                TermEvent::FileRequest(FileRequest::Put { dir: "/srv/my dir".into() }),
+            ]
+        );
     }
 
     #[test]

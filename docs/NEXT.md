@@ -2,7 +2,7 @@
 
 Start a fresh session in `/home/ion/development/ionterm` with something like:
 
-> Read `docs/NEXT.md`, then do task 1.
+> Read `docs/NEXT.md`, then pick up the next task.
 
 This file has what a new session needs: what exists, how the user likes things, how to test without bothering them, and the next tasks in detail. `docs/PLAN.md` is the full roadmap with checkboxes. Keep both up to date as tasks finish.
 
@@ -30,6 +30,8 @@ Done so far, in commit order (`git log --oneline`):
    - A reconnect banner, per-host colour/icon/group, and recognition of `ssh` typed in a shell.
    - A connection editor that saves to `~/.ssh/config.d/ionterm`.
 6. **SSH phase 3, task 1 (file panel):** `files/` (`remote.rs` runs commands over the shared connection and parses listings, `transfer.rs` runs downloads and uploads on threads, `panel.rs` is the widget), `app/files.rs` (the app glue: requests, conflicts, toasts, the floating transfer card) and `dialog.rs` (a generic modal with buttons, an optional input and a checkbox).
+7. **SSH phase 3, task 2 (drag and drop):** `dnd/` (`wayland.rs` binds our own `wl_data_device` on winit's display, on its own queue and thread; `App::exiting` must drop the listener before winit disconnects) and `app/drag.rs` (drop targets, the highlight while dragging, upload or paste).
+8. **SSH phase 3, task 3 (rsync, ZMODEM, `ionterm-get`/`ionterm-put`):** `files/rsync.rs`, `zmodem/` (`frame.rs` wire format, `mod.rs` detector and session) wired into `pty.rs`'s reader, `app/rzsz.rs`, and OSC 5379 in `ionterm-vt`. See "SSH phase 3: files" below.
 
 ## Code map
 
@@ -51,11 +53,18 @@ crates/ionterm/          the app
   tabbar.rs / menu.rs / palette.rs / editor.rs   UI widgets: layout(), hit(), draw() built from ChromeItems
   ssh/                   config.rs (parse ~/.ssh/config + Include), bootstrap.rs (remote script),
                          detect.rs (typed ssh argv), store.rs (save/delete hosts, Include line, hosts.toml), mod.rs (Connection argv, ControlMaster)
-  pty.rs                 portable-pty spawn (OutputSink), reader thread, exit_code, foreground process
+  pty.rs                 portable-pty spawn (OutputSink), reader thread (hands ZMODEM to a zmodem::Session), exit_code, foreground process
+  files/                 remote.rs (commands over the shared connection, listings), transfer.rs (threads, progress, cancel),
+                         rsync.rs (used when both ends have rsync), panel.rs (the side panel widget)
+  zmodem/                frame.rs (headers, subpackets, CRCs, decoder), mod.rs (Detector, Session: sz → us, us → rz)
+  dnd/                   drops: mod.rs (uri-list, shell quoting), wayland.rs (own wl_data_device; winit 0.30 has none)
+  dialog.rs              generic modal: buttons, optional input and checkbox
+  app/                   files.rs (panel requests, conflicts, toasts, transfer card), drag.rs (drop targets), rzsz.rs (ZMODEM glue)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   config.rs / theme.rs / links.rs
 extras/                  terminfo source, Ionix styler theme files + install functions, example ionterm.toml
 scripts/keytest.sh       real-keystroke test of the keyboard protocol (Hyprland)
+scripts/drive.sh         guarded Hyprland driver for test windows (see Testing)
 ```
 
 Patterns to follow:
@@ -87,9 +96,10 @@ Patterns to follow:
 ## Testing without bothering the user
 
 **Their machine:**
-- **System and shell:** Arch, Hyprland 0.56 (Lua config, so `hyprctl dispatch` takes Lua), fish 4.9 with an oh-my-posh prompt that has a right-hand block, kitty with JetBrainsMono Nerd Font 11pt, Intel GPU on Vulkan.
+- **System and shell:** Arch, Hyprland 0.56 (Lua config, so `hyprctl dispatch` takes Lua), fish 4.9 with an oh-my-posh prompt that has a right-hand block, kitty with JetBrainsMono Nerd Font 11pt, NVIDIA RTX 4070 on Vulkan.
 - **SSH:** 51 hosts in `~/.ssh/config`, no Include before ionterm adds one. Key login to localhost does NOT work, and localhost's host key changed in `known_hosts`.
-- **Tools installed:** `kitten`, `chafa`, `yazi`, ImageMagick `magick`, `sftp`, `scp`. Not installed: `lrzsz`.
+- **Tools installed:** `kitten`, `chafa`, `yazi`, ImageMagick `magick`, `sftp`, `scp`, `rsync` 3.5, `gamescope`, `xdotool`. Not installed: `lrzsz` (not on `ionserver` either).
+- **Their test server:** `ionserver` (Ubuntu, bash 5.2, zsh and rsync 3.2.7 installed, no lrzsz) is fine to test against; they offered it. Clean up anything you create there.
 
 **Driving ionterm through Hyprland: always use `scripts/drive.sh`.** Claude Code runs inside the user's **kitty**, which is normally the focused window. A dispatch with an empty or stale pid (`window = "pid:"`) can land on kitty, and test keys like ctrl+d, Escape or Return then hit Claude Code itself. A previous session lost its own terminal this way. `drive.sh` only sends keys to, or kills, the window it launched, after checking that it is a live `ionterm` window and not an ancestor of the shell. Never use `pkill`/`killall`, `killactive`, or a dispatch without a verified `window =`.
 ```bash
@@ -99,6 +109,14 @@ scripts/drive.sh shot shot.png          # then Read the png to look at it
 scripts/drive.sh close
 ```
 - **Key names** are xkb names (`Return`, `BackSpace`, `period`, `Down`, …). `slash` did not type a `/`, so avoid needing one.
+- **Testing the bootstrap's shell hooks** without a window: run the script under Python's `pty` and grep the output for `\e]7;` and `\e]5379;`. fish 4 waits at startup for answers to its terminal queries, so reply to `\e[0c` with `\e[?62;22c`, or fish never reads input.
+- **When the screen is locked** (it locks after a while), `grim -g` captures the lock screen and the window stops redrawing (no frame callbacks). `grim -w <address>` captures one window but shows a stale frame. Use headless gamescope instead, which doesn't care about the lock: run ionterm inside it as an X11 client, type with `xdotool` on gamescope's display (`DISPLAY=:1`; `xdotool type` handles `/`), and screenshot with `gamescopectl screenshot <file>`:
+  ```bash
+  env -u WAYLAND_DISPLAY -u DISPLAY gamescope --backend headless -W 1200 -H 650 -w 1200 -h 650 -- env -u WAYLAND_DISPLAY <launcher.sh> &
+  DISPLAY=:1 xdotool type -- 'sz huge.bin'; DISPLAY=:1 xdotool key Return
+  gamescopectl screenshot shot.png
+  ```
+  Put the ionterm command in a launcher script rather than nesting quotes. Mouse and drag-and-drop still need the user.
 - **Don't move the user's mouse.** Mouse-only features (drag, right-click menus, hover) need the user to verify; say so plainly.
 - **Shell:** launching via `hl.dsp.exec_cmd` gives the user's real environment (fish). Launching from the Bash tool gives bash (`$SHELL` differs), so use `-e fish` there.
 
@@ -112,76 +130,33 @@ scripts/drive.sh close
   export HOME=$SCRATCH/fakehome PATH=$SCRATCH/fakebin:$PATH SHELL=/usr/bin/fish; cd "$HOME"
   if [ -n "$cmd" ]; then exec sh -c "$cmd"; else exec bash -l; fi
   ```
-  Launch with `hl.dsp.exec_cmd("env PATH=$SCRATCH/bin:/usr/bin …/ionterm ssh fakehost")`. Don't connect to the user's real servers without asking: the bootstrap writes `~/.terminfo` there.
+  Launch with `hl.dsp.exec_cmd("env PATH=$SCRATCH/bin:/usr/bin …/ionterm ssh fakehost")`. Don't connect to the user's real servers without asking (except `ionserver`): the bootstrap writes `~/.terminfo` there. rsync works through the fake ssh too (it runs `rsync --server` locally).
+- **lrzsz for ZMODEM tests:** download Arch's `lrzsz` package from a mirror into its own scratch folder, verify it (`gpg --homedir /etc/pacman.d/gnupg --verify <pkg>.sig <pkg>`), and extract it there; don't install it. Link `lrzsz-sz`/`lrzsz-rz` as `sz`/`rz` in the fake host's `fakebin`. The session tests run against it with `IONTERM_LRZSZ=<dir>/usr/bin cargo test -p ionterm lrzsz -- --ignored`.
+- **Transfers against a real host:** `IONTERM_TEST_HOST=ionserver cargo test -p ionterm round_trips_over_ssh -- --ignored` (rsync, the cat/tar fallback, and rsync cancels on both sides; it cleans up its `/tmp` folder).
 - **Debugging and timing:**
-  - `IONTERM_LOG=ionterm_vt=debug` logs unhandled escape sequences.
+  - `IONTERM_LOG=ionterm_vt=debug` logs unhandled escape sequences. Logs go to **stdout**, not stderr.
   - `IONTERM_DUMP=<file>` records raw PTY output.
   - For animations, capture `grim` frames ~50 ms apart and measure pixels with PIL.
 - **Wayland redraws:** `app.rs` calls `window.pre_present_notify()` before rendering. Without it, back-to-back redraws on Wayland only arrive when something else wakes the loop, so keep it.
 
-## Next tasks: SSH phase 3, files (do these first)
+## SSH phase 3: files (done)
 
-The user wants **Tabby-style SSH file transfer**. Their words: "similar to Tabby's SSH support, having a file upload/download feature and such to be usable", and "ZMODEM shouldn't be the only way to transfer. It can be the default, but have a fallback if not available on the server."
+The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way to transfer". Later: "rsync is a good option if the server has it available, and add the possibility of ZMODEM. The most appropriate one should be used." What's built, all with the system's OpenSSH:
 
-They already chose:
-- an SFTP side panel;
-- drag-and-drop upload;
-- ZMODEM with a fallback;
-- system OpenSSH as the engine (not an embedded SSH library);
-- remote shell integration for the remote directory (already built: OSC 7 → `Pane::remote_cwd`).
+- **The engine** (`files/transfer.rs`): uploads and downloads for the panel, drag and drop, and `ionterm-get`/`ionterm-put`. Runs over the tab's shared connection (`ControlMaster`; `Remote` = `Connection::exec_argv`), one thread per transfer, at most 3 at once, cancellable.
+  - **rsync** when both ends have it (`rsync::usable`: Linux only, local `rsync --version` once, remote `command -v rsync` cached per host). `-s` keeps paths away from shells, `--partial-dir=.ionterm-partial` resumes interrupted files, cancel = SIGTERM, then the partial is removed. The transfer card says "via rsync".
+  - **Otherwise `cat`/`tar` over ssh**, with `.part` files, the `tar` crate on the local side ("via ssh").
+- **The file panel** (`ctrl+shift+o`, task 1) and **drag and drop** (task 2) use the engine. Dropping on a typed-`ssh` pane (no shared connection) queues the files for the next `rz` instead ("Run rz on the server to receive …").
+- **ZMODEM** (`zmodem/`): the PTY reader spots a valid ZRQINIT (`sz`) or ZRINIT (`rz`) hex header and hands the bytes to a `Session`; input to the pane is dropped while it runs (`Pane::write`), and ctrl+c or Escape cancels.
+  - `sz file` downloads to the download folder (taken names become `file (1).ext`; the sender can't wait for a question).
+  - `rz` sends files dropped on the pane beforehand, or opens the picker; picking writes a ZRQINIT to the PTY so `rz` answers at once instead of after its 10 s timeout.
+  - Cancelling a download sends ZSKIP: `sz` stops and finishes normally, so nothing leaks onto the screen. lrzsz doesn't reliably acknowledge CANs, which is why an earlier design swallowed the prompt. CANs are only the fallback after 5 s.
+  - ZCOMMAND (the server asking to run a command) is refused.
+- **`ionterm-get <file|dir>…` and `ionterm-put [dir]`**: shell functions the bootstrap defines (bash, zsh, fish) that send OSC 5379 (`get`/`get-dir`/`put` + base64 absolute path). Only followed for connections ionterm opened. They work without lrzsz and use the engine above.
 
-Decided on 2026-10-15:
-- **Panel only for ionterm-launched connections.** Typed `ssh` sessions (`pane.detected_ssh`) don't get the panel. Show a hint like "Reconnect via ionterm to browse files" instead.
-- **Upload picker: the XDG portal** (`org.freedesktop.portal.FileChooser` via `ashpd`/`zbus`), with a native dialog on Windows (e.g. `rfd`). No path-input field first.
-- **Download name conflicts: ask each time** with Overwrite / Rename / Skip (Rename = `file (1).txt`).
-- **Add `ionterm-get <file>` and `ionterm-put [dir]`:** the bootstrap installs these shell functions on the server. They trigger a download, or open the picker and upload, through an OSC sequence, so lrzsz isn't needed. They are part of task 3.
+**Still for the user to check** (needs the mouse or pops a portal dialog): the upload picker and `rz`'s picker, the panel's mouse parts, dragging files onto local, SSH and typed-`ssh` panes, and the follow button.
 
-### Shared groundwork: a transfer engine over the existing connection
-
-Panes opened by ionterm have `pane.connection: Option<ssh::Connection>`, whose argv carries `-o ControlMaster=auto -o ControlPath=~/.cache/ionterm/ssh/%C -o ControlPersist=300` on Unix. Extra `ssh` processes using the same ControlPath and alias reuse the open connection instantly, with no second login. Windows' OpenSSH has no ControlMaster, so there every operation authenticates on its own (fine with keys or an agent).
-
-Suggested approach (confirm with the user if unsure): run single commands over that shared connection instead of parsing interactive `sftp` output.
-- **List:** `ssh <ctl-opts> <alias> -- 'cd -- <dir> && LC_ALL=C ls -la --time-style=+%s'`. GNU `find -printf` is nicer, but BusyBox lacks it, so parse `ls -la` with a fallback. Show size, mtime, type, permissions, symlink targets.
-- **Download:** `ssh … -- cat -- '<path>'`. Read stdout in a thread, write to `~/Downloads` (`dirs::download_dir()`) via a `.part` file, and count bytes for progress (size known from the listing).
-- **Upload:** `ssh … -- "cat > '<path>.part' && mv -- '<path>.part' '<path>'"`, writing the local file to stdin.
-- **Directories:** stream `tar`: `tar -C <dir> -cf - <name> | ssh … tar -C <dest> -xf -`, and the reverse.
-- **Rename / delete / mkdir:** `mv`, `rm -r` (confirm first), `mkdir -p`.
-- **Remote paths:** always single-quote them, escaping `'` as `'\''`. Add unit tests for the quoting.
-- **Threading:** run everything off the UI thread. Report progress through new `UserEvent` variants (e.g. `UserEvent::Transfer(id, TransferEvent)`) and keep a transfers list on `TermWindow`. Let transfers be cancelled (kill the child).
-- **Typed `ssh`:** typed sessions (`pane.detected_ssh`) have no ControlMaster. For them, either offer the panel only for ionterm-launched connections, or run commands with the same argv (prompting for auth in a hidden PTY is messy). Ask the user which they prefer.
-
-### Task 1: SFTP side panel (done)
-
-Built as described below, and tested against fake ssh: listing, follow terminal, filter, download (file and folder), the conflict dialog, new folder and delete. **The user still needs to check** the upload picker (a portal dialog would pop up on their screen) and the mouse parts (clicks, double-click, right-click row menu, hover, the toolbar buttons). Hooks for the next tasks: `App::upload(pane, remote, dir, paths)` uploads with conflict handling, so drag and drop (task 2) can call it. `ionterm-get` (task 3) needs a "download one remote path" helper, which can build an `Entry` and call `queue_downloads`.
-
-The original brief:
-
-- **Opening it:** a panel on the right of an SSH tab, toggled by a new action. Suggested key `ctrl+shift+o` (`ctrl+shift+f` is taken by `move_pane_forward`; `ctrl+shift+e` is reserved for hints). Also add "Files…" to the tab right-click menu (`menu.rs`) for SSH tabs.
-- **Building it:** treat it as a widget like `palette.rs`/`editor.rs` (`layout`/`hit`/`draw` from `ChromeItem`s), but docked rather than an overlay. It should take width from the tab's pane area in `TermWindow::relayout` (the panes get a narrower area).
-- **Browsing:** a breadcrumb path, list rows (folders first, Nerd Font icons via `tabbar::process_icon`-style mapping by extension), keyboard navigation (Enter opens a folder, Backspace goes up), mouse double-click, and a "follow terminal" toggle that tracks `pane.remote_cwd` (OSC 7).
-- **Actions:** download (to `~/Downloads`, then "show in folder" via `xdg-open`/ioexplorer), upload (a local file picker: XDG portal `org.freedesktop.portal.FileChooser` via `ashpd` or `zbus`, or a simple path-input field first), rename, delete (confirm), new folder, refresh.
-- **Transfers:** a strip at the bottom of the panel with progress bars, speed, and cancel.
-
-### Task 2: Drag and drop upload
-
-- **The catch:** winit 0.30 does not support file drops on Wayland (`WindowEvent::DroppedFile` is only emitted on X11, Windows and macOS; verified in `winit-0.30.13/src/platform_impl`). On Wayland this needs its own `wl_data_device` handling:
-  - Use `smithay-client-toolkit`'s data-device/DnD support on the window's `wl_surface`, with the display and surface from `window.display_handle()` / `window.window_handle()` (raw-window-handle) on a separate event queue.
-  - Accept the `text/uri-list` mime type, and parse `file://` URIs (percent-decoded; `pane::path_from_file_url` exists).
-  - Check the winit version first: newer winit may support it, and upgrading may be simpler.
-- **Behaviour:** dropping files on an SSH pane uploads them to `pane.remote_cwd` (fallback: remote home), with progress in the panel's transfer strip (or a small toast if the panel is closed). Dropping on a local pane should paste the shell-quoted paths, like most terminals do.
-
-### Task 3: ZMODEM, with SFTP as the fallback
-
-- **Detecting it:** watch PTY output in `pty.rs`'s reader for the ZMODEM start sequences:
-  - `**\x18B00` (ZRQINIT, from `sz` on the remote = download);
-  - `**\x18B01` (ZRINIT, from `rz` = upload).
-- **Handling it:** while a transfer runs, the reader hands bytes to a ZMODEM state machine instead of the `Processor`, and writes protocol replies to the PTY.
-- **Implement it natively in Rust:**
-  - `lrzsz` isn't installed locally and doesn't exist on Windows. Consider the `zmodem2` crate (check it's maintained and the license is OK) or a small ZMODEM receive/send implementation.
-  - Downloads go to `~/Downloads` with progress. For `rz`, ask which local files to send (same picker as task 1) and allow cancelling (send ZABORT/CAN×5).
-- **Fallback:** if the server has no `sz`/`rz`, uploads and downloads go through the SFTP-panel engine. The user explicitly wants ZMODEM as the default but never the only way. A simple helper command for the remote shell (e.g. a shell function `ionterm-get <file>` that the bootstrap defines, triggering a download through an OSC sequence) is a nice optional extra; ask first.
-
-## Later tasks (from docs/PLAN.md)
+## Next tasks (from docs/PLAN.md)
 
 - **v0.3b power features:**
   - Shell integration: jump between prompts (OSC 133 marks already tracked in `Row::prompt`), select a command's output.
@@ -194,4 +169,4 @@ The original brief:
   - Windows polish (own titlebar, installer).
   - Optional `ionterm @` remote control.
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
-- **Not yet verified on a real server:** SSH connect, terminfo install and reconnect have only been tested against the fake-ssh setup. Ask the user how their real hosts behaved.
+- **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there. Reconnect after a dropped connection is still only tested against the fake-ssh setup.

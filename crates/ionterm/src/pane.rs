@@ -15,8 +15,9 @@ use crate::config::TerminalConfig;
 use crate::input::MouseButton;
 use crate::layout::{PaneId, Rect};
 use crate::links::{self, Link, LinkKind};
-use crate::pty::{OutputSink, Pty};
+use crate::pty::{OutputSink, Pty, SharedWriter};
 use crate::ssh::{Connection, DetectedSsh, detect};
+use crate::zmodem;
 
 /// One line per tick while a selection is dragged past the top or bottom.
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(40);
@@ -74,9 +75,12 @@ pub struct Pane {
     /// The foreground program's name, refreshed every `PROCESS_REFRESH`.
     pub process: Option<String>,
     process_checked: Option<Instant>,
+    /// ZMODEM state shared with the PTY reader.
+    pub zmodem: Arc<zmodem::Shared>,
 }
 
 impl Pane {
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         id: PaneId,
         config: &TerminalConfig,
@@ -85,6 +89,7 @@ impl Pane {
         palette: Palette,
         metrics: CellMetrics,
         proxy: EventLoopProxy<UserEvent>,
+        zmodem: Arc<zmodem::Shared>,
     ) -> anyhow::Result<Self> {
         // A placeholder size; the first layout pass sets the real one.
         let (cols, rows) = (80, 24);
@@ -103,6 +108,7 @@ impl Pane {
                 term: term.clone(),
                 proxy,
                 wakeup_pending: wakeup_pending.clone(),
+                zmodem: zmodem.clone(),
             },
         )?;
         Ok(Self {
@@ -129,6 +135,7 @@ impl Pane {
             last_autoscroll: None,
             process: None,
             process_checked: None,
+            zmodem,
         })
     }
 
@@ -136,8 +143,22 @@ impl Pane {
         self.term.lock().expect("terminal lock poisoned")
     }
 
+    /// Sends input to the program. Dropped while a ZMODEM transfer runs:
+    /// stray keys would corrupt it.
     pub fn write(&self, bytes: &[u8]) {
+        if self.zmodem.is_active() {
+            return;
+        }
         self.pty.write(bytes);
+    }
+
+    /// Sends bytes even during a transfer (to cancel or nudge it).
+    pub fn write_raw(&self, bytes: &[u8]) {
+        self.pty.write(bytes);
+    }
+
+    pub fn pty_writer(&self) -> SharedWriter {
+        self.pty.writer()
     }
 
     /// Looks up the foreground program again if the last check is stale.
@@ -200,6 +221,7 @@ impl Pane {
                 term: self.term.clone(),
                 proxy,
                 wakeup_pending: self.wakeup_pending.clone(),
+                zmodem: self.zmodem.clone(),
             },
         )?;
         self.disconnected = None;
@@ -213,16 +235,19 @@ impl Pane {
 
     /// Records an OSC 7 report: local paths and remote ones are kept apart,
     /// so a remote directory never becomes a local tab's starting point.
-    pub fn report_cwd(&mut self, url: &str, local_host: &str) {
+    /// Returns whether it was a remote directory.
+    pub fn report_cwd(&mut self, url: &str, local_host: &str) -> bool {
         let host = url
             .strip_prefix("file://")
             .and_then(|rest| rest.split('/').next())
             .unwrap_or_default();
-        let Some(path) = path_from_file_url(url) else { return };
+        let Some(path) = path_from_file_url(url) else { return false };
         if host.is_empty() || host == "localhost" || host.eq_ignore_ascii_case(local_host) {
             self.cwd = Some(path);
+            false
         } else {
             self.remote_cwd = Some(path.to_string_lossy().into_owned());
+            true
         }
     }
 

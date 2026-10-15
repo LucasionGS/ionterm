@@ -38,6 +38,24 @@ impl Remote {
         }
     }
 
+    /// For tests against a real host: `argv` ends in `-- <alias>`.
+    #[cfg(test)]
+    pub fn with_alias(alias: &str, argv: Vec<String>) -> Self {
+        Self {
+            alias: alias.into(),
+            argv,
+        }
+    }
+
+    /// The `ssh …` options without the host, for tools that run ssh
+    /// themselves (rsync's `-e`). `None` for test "remotes" that aren't ssh.
+    pub fn ssh_options(&self) -> Option<&[String]> {
+        match self.argv.as_slice() {
+            [options @ .., separator, alias] if separator == "--" && *alias == self.alias => Some(options),
+            _ => None,
+        }
+    }
+
     /// A command that runs `script` with `sh` on the host.
     pub fn command(&self, script: &str) -> Command {
         let mut command = Command::new(&self.argv[0]);
@@ -482,10 +500,10 @@ mod tests {
     #[test]
     fn parses_find_output() {
         let mut out = b"/home/ion\nF\n".to_vec();
-        out.extend_from_slice(b"f\0f\01234\01791566252.0954\0644\0ion\0notes.txt\0\0");
-        out.extend_from_slice(b"d\0d\04096\01791566252.5\0755\0ion\0apps\0\0");
-        out.extend_from_slice(b"l\0d\09\01791566252.5\0777\0ion\0data\0/mnt/data\0");
-        out.extend_from_slice(b"f\0f\00\01\0600\0ion\0with\nnewline\0\0");
+        out.extend_from_slice(b"f\0f\x001234\x001791566252.0954\x00644\0ion\0notes.txt\0\0");
+        out.extend_from_slice(b"d\0d\x004096\x001791566252.5\x00755\0ion\0apps\0\0");
+        out.extend_from_slice(b"l\0d\x009\x001791566252.5\x00777\0ion\0data\0/mnt/data\0");
+        out.extend_from_slice(b"f\0f\x000\x001\x00600\0ion\0with\nnewline\0\0");
         let listing = parse_listing(&out).unwrap();
         assert_eq!(listing.path, "/home/ion");
         let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();

@@ -139,6 +139,8 @@ pub enum Request {
     Close,
     /// Give the keyboard back to the terminal.
     Unfocus,
+    /// Following was turned on: show the terminal's directory now.
+    Follow,
 }
 
 /// The right-click menu on a row.
@@ -470,7 +472,7 @@ impl FilePanel {
                         } else {
                             "Not following the terminal"
                         });
-                        None
+                        self.follow.then_some(Request::Follow)
                     }
                     Button::Close => Some(Request::Close),
                 };
@@ -1195,10 +1197,16 @@ pub fn draw_transfers(
 fn transfer_detail(t: &Transfer) -> String {
     match &t.state {
         TransferState::Queued => "waiting".into(),
-        TransferState::Done => match t.direction {
-            Direction::Download => format!("{} saved", human_size(t.bytes)),
-            Direction::Upload => format!("{} sent", human_size(t.bytes)),
-        },
+        TransferState::Done => {
+            let done = match t.direction {
+                Direction::Download => format!("{} saved", human_size(t.bytes)),
+                Direction::Upload => format!("{} sent", human_size(t.bytes)),
+            };
+            match t.method {
+                Some(method) => format!("{done} via {method}"),
+                None => done,
+            }
+        }
         TransferState::Cancelled => "cancelled".into(),
         TransferState::Failed(message) => truncate(message, 28),
         TransferState::Running => {

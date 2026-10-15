@@ -905,6 +905,7 @@ dependencies = [
  "pollster 1.0.1",
  "portable-pty",
  "rfd",
+ "rustix 1.1.5",
  "serde",
  "tar",
  "toml",
@@ -912,6 +913,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "wayland-backend",
+ "wayland-client",
  "winit",
 ]
 

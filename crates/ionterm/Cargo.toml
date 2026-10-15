@@ -26,5 +26,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2.2"
 winit = "0.30.13"
 
+# File drops on Wayland, which winit 0.30 doesn't report (see dnd.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.5", features = ["event", "process"] }
+wayland-backend = { version = "0.3.17", features = ["client_system"] }
+wayland-client = "0.31.15"
+
 [build-dependencies]
 embed-resource = "3.0.12"

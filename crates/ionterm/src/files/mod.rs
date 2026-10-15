@@ -5,6 +5,7 @@
 
 pub mod panel;
 pub mod remote;
+mod rsync;
 pub mod transfer;
 
 use std::collections::HashSet;
@@ -45,6 +46,8 @@ pub enum FilesEvent {
         dir: String,
         paths: Vec<PathBuf>,
     },
+    /// Files chosen for a waiting `rz`; empty when the picker was closed.
+    ZmodemPicked { pane: PaneId, paths: Vec<PathBuf> },
 }
 
 fn send(proxy: &EventLoopProxy<UserEvent>, event: FilesEvent) {
@@ -77,8 +80,9 @@ pub fn change(
     });
 }
 
-/// Looks up what's already in `dir` before uploading `paths` there.
-pub fn check_upload(proxy: EventLoopProxy<UserEvent>, pane: PaneId, remote: Remote, dir: String, paths: Vec<PathBuf>) {
+/// Looks up what's already in `dir` (`None` = the remote home) before
+/// uploading `paths` there.
+pub fn check_upload(proxy: EventLoopProxy<UserEvent>, pane: PaneId, remote: Remote, dir: Option<String>, paths: Vec<PathBuf>) {
     spawn("files-check", move || {
         let names: Vec<String> = paths
             .iter()
@@ -86,10 +90,14 @@ pub fn check_upload(proxy: EventLoopProxy<UserEvent>, pane: PaneId, remote: Remo
             .map(|n| n.to_string_lossy().into_owned())
             .collect();
         // The whole folder's names, so "rename" can pick a free one.
-        let existing = remote
-            .list(Some(&dir))
-            .map(|listing| listing.entries.into_iter().map(|e| e.name).collect())
-            .or_else(|_| remote.existing(&dir, &names).map(|found| found.into_iter().collect()));
+        let (dir, existing) = match (remote.list(dir.as_deref()), dir) {
+            (Ok(listing), _) => (listing.path, Ok(listing.entries.into_iter().map(|e| e.name).collect())),
+            (Err(_), Some(dir)) => {
+                let found = remote.existing(&dir, &names).map(|found| found.into_iter().collect());
+                (dir, found)
+            }
+            (Err(error), None) => ("~".into(), Err(error)),
+        };
         send(&proxy, FilesEvent::UploadTargets { pane, dir, paths, existing });
     });
 }
@@ -107,6 +115,14 @@ pub fn pick(proxy: EventLoopProxy<UserEvent>, pane: PaneId, dir: String, folders
         if let Some(paths) = paths.filter(|p| !p.is_empty()) {
             send(&proxy, FilesEvent::Picked { pane, dir, paths });
         }
+    });
+}
+
+/// Asks which files a waiting `rz` should receive.
+pub fn pick_for_zmodem(proxy: EventLoopProxy<UserEvent>, pane: PaneId) {
+    spawn("files-pick", move || {
+        let paths = rfd::FileDialog::new().set_title("Send with rz").pick_files().unwrap_or_default();
+        send(&proxy, FilesEvent::ZmodemPicked { pane, paths });
     });
 }
 

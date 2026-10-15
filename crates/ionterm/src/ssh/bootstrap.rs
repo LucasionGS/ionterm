@@ -3,8 +3,9 @@
 //! It makes sure the remote end knows ionterm's `TERM` (installing the
 //! terminfo entry with `tic` when it can, otherwise falling back to
 //! `xterm-256color`), then starts the user's login shell with a small hook
-//! that reports the working directory (OSC 7) for this session only. Hook
-//! files live in a temporary directory that the shell deletes once read.
+//! that reports the working directory (OSC 7), and the `ionterm-get` and
+//! `ionterm-put` commands (OSC 5379), for this session only. Hook files live
+//! in a temporary directory that the shell deletes once read.
 //!
 //! The script is sent base64-encoded inside a single-quoted `sh -c`, which
 //! survives being parsed by bash, zsh, fish or csh as the login shell.
@@ -28,10 +29,65 @@ export TERM COLORTERM TERM_PROGRAM
 host=$(hostname 2>/dev/null || uname -n)
 shell=${SHELL:-/bin/sh}
 tmp=$(mktemp -d 2>/dev/null || mktemp -d -t ionterm)
+cat > "$tmp/fns" <<'IONTERM_EOF'
+__ionterm_b64() { printf %s "$1" | base64 | tr -d '\n'; }
+ionterm-get() {
+  if [ $# -eq 0 ]; then echo 'Usage: ionterm-get <file>...' >&2; return 2; fi
+  local f p k
+  for f in "$@"; do
+    case $f in /*) p=$f ;; *) p=$PWD/$f ;; esac
+    if [ ! -e "$p" ]; then echo "ionterm-get: $f: No such file or directory" >&2; continue; fi
+    k=get; [ -d "$p" ] && k=get-dir
+    printf '\033]5379;%s;%s\007' "$k" "$(__ionterm_b64 "$p")"
+  done
+}
+ionterm-put() {
+  local d=${1:-$PWD}
+  case $d in /*) ;; *) d=$PWD/$d ;; esac
+  if [ ! -d "$d" ]; then echo "ionterm-put: $d: Not a directory" >&2; return 1; fi
+  printf '\033]5379;put;%s\007' "$(__ionterm_b64 "$d")"
+}
+IONTERM_EOF
 case "${shell##*/}" in
   fish)
-    rm -rf "$tmp"
-    exec "$shell" -l -C "function __ionterm_osc7 --on-variable PWD; printf '\e]7;file://%s%s\a' $host (string escape --style=url -- \$PWD); end; __ionterm_osc7"
+    cat > "$tmp/ionterm.fish" <<'IONTERM_EOF'
+set -q hostname; or set -g hostname (uname -n)
+function __ionterm_osc7 --on-event fish_prompt
+    printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
+end
+function __ionterm_b64
+    printf %s $argv[1] | base64 | string join ''
+end
+function ionterm-get --description 'Download files to this computer, through ionterm'
+    if test (count $argv) -eq 0
+        echo 'Usage: ionterm-get <file>...' >&2
+        return 2
+    end
+    for f in $argv
+        set -l p $f
+        string match -q -- '/*' $p; or set p $PWD/$f
+        if not test -e $p
+            echo "ionterm-get: $f: No such file or directory" >&2
+            continue
+        end
+        set -l k get
+        test -d $p; and set k get-dir
+        printf '\e]5379;%s;%s\a' $k (__ionterm_b64 $p)
+    end
+end
+function ionterm-put --description 'Upload files from this computer, through ionterm'
+    set -l d $PWD
+    test (count $argv) -gt 0; and set d $argv[1]
+    string match -q -- '/*' $d; or set d $PWD/$d
+    if not test -d $d
+        echo "ionterm-put: $d: Not a directory" >&2
+        return 1
+    end
+    printf '\e]5379;put;%s\a' (__ionterm_b64 $d)
+end
+__ionterm_osc7
+IONTERM_EOF
+    exec "$shell" -l -C "source '$tmp/ionterm.fish'; rm -rf '$tmp'"
     ;;
   bash)
     cat > "$tmp/rc" <<'IONTERM_EOF'
@@ -42,8 +98,9 @@ elif [ -f ~/.profile ]; then . ~/.profile
 fi
 __ionterm_osc7() { printf '\e]7;file://%s%s\a' "$HOSTNAME" "$PWD"; }
 PROMPT_COMMAND="__ionterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-rm -rf "$(dirname "${BASH_SOURCE[0]}")"
 IONTERM_EOF
+    cat "$tmp/fns" >> "$tmp/rc" 2>/dev/null
+    printf '%s\n' 'rm -rf "$(dirname "${BASH_SOURCE[0]}")"' >> "$tmp/rc"
     exec "$shell" --rcfile "$tmp/rc" -i
     ;;
   zsh)
@@ -53,9 +110,9 @@ ZDOTDIR=$HOME
 [ -f "$HOME/.zshenv" ] && . "$HOME/.zshenv"
 __ionterm_osc7() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD"; }
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __ionterm_osc7
-rm -rf "$tmp_dir"
-unset tmp_dir
 IONTERM_EOF
+    cat "$tmp/fns" >> "$tmp/.zshenv" 2>/dev/null
+    printf '%s\n' 'rm -rf "$tmp_dir"' 'unset tmp_dir' >> "$tmp/.zshenv"
     ZDOTDIR=$tmp exec "$shell" -l
     ;;
   *)
