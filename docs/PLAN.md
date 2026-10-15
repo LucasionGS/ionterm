@@ -195,7 +195,7 @@ Phase 3: files
 - SSH wrapper with terminfo install and fallback
 - [x] Settings tab (the gear at the end of the tab bar, ctrl+, or ctrl+shift+f2): switches, choices, steppers, text fields and a font picker with previews for the simple settings, saved instantly to `ionterm.toml` with `toml_edit` (comments kept; a setting back at its default is removed); `ionterm.toml`, `theme.toml` and the SSH config open in `$EDITOR` inside the tab, which returns to the page when the editor exits
 - [x] Hints mode (ctrl+shift+e): URLs (and OSC 8 links), file paths, `file:line[:col]`, git hashes and IPs get home-row labels; typing one opens it (files in `$EDITOR` at the line in a new tab, or the `[hints] open_file` command), shift copies, alt types it into the command line. Paths in SSH panes are copied
-- Scrollback search (plain + regex, highlighted matches)
+- [x] Scrollback search (ctrl+shift+f): plain or regex (alt+r), smart case, across soft wraps, every match highlighted, Enter/shift+Enter or arrows to step, re-searched as output arrives. Moving panes moved to ctrl+shift+alt+f / b
 - Background image/opacity, cursor trail
 
 ### v0.4: Ionix and Windows

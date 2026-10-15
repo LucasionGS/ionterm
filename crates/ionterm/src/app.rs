@@ -6,6 +6,7 @@ mod files;
 mod hints;
 mod integration;
 mod rzsz;
+mod search;
 mod settings;
 
 use std::collections::HashMap;
@@ -146,6 +147,8 @@ struct TermWindow {
     zmodem_transfers: HashMap<PaneId, TransferId>,
     /// Hints mode, while it's shown.
     hints: Option<hints::HintsMode>,
+    /// The scrollback search, while open.
+    search: Option<search::SearchState>,
 }
 
 struct TabDrag {
@@ -299,6 +302,7 @@ impl App {
             dropped: Vec::new(),
             zmodem_transfers: HashMap::new(),
             hints: None,
+            search: None,
         };
         w.drops = dnd::listen(&w.window, self.proxy.clone());
         w.relayout(&self.config, false);
@@ -563,7 +567,7 @@ impl App {
 
     fn paste(&mut self, primary: bool) {
         let Some(text) = self.get_clipboard(primary) else { return };
-        if self.settings_paste(&text) {
+        if self.settings_paste(&text) || self.search_paste(&text) {
             return;
         }
         let Some(w) = &mut self.window else { return };
@@ -789,6 +793,7 @@ impl App {
             Action::CopyLastOutput => self.copy_last_output(),
             Action::Hints => self.toggle_hints(),
             Action::OpenSettings => self.open_settings(),
+            Action::Search => self.toggle_search(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
@@ -971,6 +976,9 @@ impl App {
         if let Some(text) = clipboard {
             self.set_clipboard(text, false);
         }
+        if let Some(w) = &mut self.window {
+            w.search_output(id);
+        }
         // Shells report after every command, not only after a `cd`, so a
         // panel browsed elsewhere comes back once the terminal is used.
         if remote_cwd {
@@ -1024,6 +1032,15 @@ impl App {
         }
         if self.files_click(button, pressed) {
             return FollowUp::None;
+        }
+        if pressed
+            && button == MouseButton::Left
+            && let Some(w) = &self.window
+        {
+            let (x, y) = (w.pointer.x as f32, w.pointer.y as f32);
+            if self.search_click(x, y) {
+                return FollowUp::None;
+            }
         }
         // The settings page takes every click on it.
         if let Some(w) = &self.window
@@ -1348,7 +1365,7 @@ impl App {
             }
             return;
         }
-        if w.settings_hover(x as f32, y as f32) {
+        if w.settings_hover(x as f32, y as f32) || w.search_hover(x as f32, y as f32) {
             return;
         }
         if w.capture.is_none() && w.files_hover(x as f32, y as f32) {
@@ -1875,6 +1892,7 @@ impl TermWindow {
         }
         self.draw_settings(config, theme, &mut items);
         self.draw_failed_marks(theme, &mut items);
+        self.draw_search(theme, &mut items);
         self.draw_hints(theme, &mut items);
         self.draw_files(theme, &mut items);
         self.draw_drag(theme, &mut items);
@@ -2149,6 +2167,12 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                if w.search_focused() {
+                    if event.state == ElementState::Pressed {
+                        self.search_key(&event);
+                    }
+                    return;
+                }
                 if w.panel_focused() {
                     if event.state == ElementState::Pressed {
                         self.files_key(&event);
@@ -2242,7 +2266,8 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let blink = self.blink_interval();
         let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
-        let mut wake = [self.reload_at, self.expire_files(now), progress_wake].into_iter().flatten().min();
+        let search_wake = self.window.as_mut().and_then(|w| w.refresh_search(now));
+        let mut wake = [self.reload_at, self.expire_files(now), progress_wake, search_wake].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

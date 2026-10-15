@@ -64,8 +64,8 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "ctrl+shift+w" = "close_pane"
 # "ctrl+shift+right_bracket" = "next_pane"
 # "ctrl+shift+left_bracket" = "previous_pane"
-# "ctrl+shift+f" = "move_pane_forward"
-# "ctrl+shift+b" = "move_pane_backward"
+# "ctrl+shift+alt+f" = "move_pane_forward"
+# "ctrl+shift+alt+b" = "move_pane_backward"
 # "ctrl+shift+l" = "next_layout"
 # Unbound by default: split_right, split_down, focus_left/right/up/down,
 # resize_wider/narrower/taller/shorter, toggle_zoom
@@ -86,6 +86,7 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "ctrl+shift+x" = "next_prompt"
 # "ctrl+shift+g" = "copy_last_command_output"
 # "ctrl+shift+e" = "hints"
+# "ctrl+shift+f" = "search"
 # "ctrl+comma" = "settings"
 # "ctrl+shift+f2" = "settings"
 # "ctrl+shift+equal" = "increase_font_size"
