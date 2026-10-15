@@ -611,6 +611,19 @@ impl Term {
             .collect()
     }
 
+    /// Drops every line above the screen.
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
+        self.display_offset = 0;
+        self.dirty = true;
+    }
+
+    /// Whether the shell is waiting at its prompt (shell integration says
+    /// so), on the main screen.
+    pub fn at_shell_prompt(&self) -> bool {
+        self.editing && !self.mode.contains(TermMode::ALT_SCREEN)
+    }
+
     /// The finished command whose prompt is on a viewport row: its exit
     /// status and timing.
     pub fn command_at_row(&self, row: usize) -> Option<(i32, CommandRun)> {

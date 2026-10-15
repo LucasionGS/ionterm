@@ -568,6 +568,12 @@ pub enum Action {
     ShowScrollback,
     /// Sends typing to every pane in the tab, or stops.
     ToggleBroadcast,
+    /// Forgets the scrollback (and clears the screen at a prompt).
+    ClearScrollback,
+    /// Copies the pane's directory (the server's, over SSH).
+    CopyCwd,
+    /// Shows the pane's directory in the file manager.
+    OpenCwd,
     /// Every command, searchable (and SSH hosts to connect to).
     CommandPalette,
     IncreaseFontSize,
@@ -638,6 +644,9 @@ impl Action {
             "search" | "find" | "search_scrollback" => Self::Search,
             "show_scrollback" | "scrollback_pager" => Self::ShowScrollback,
             "toggle_broadcast" | "broadcast" | "broadcast_input" => Self::ToggleBroadcast,
+            "clear_scrollback" | "clear_terminal" => Self::ClearScrollback,
+            "copy_cwd" | "copy_directory" => Self::CopyCwd,
+            "open_cwd" | "open_directory" | "open_folder" => Self::OpenCwd,
             "command_palette" | "commands" | "palette" => Self::CommandPalette,
             "increase_font_size" => Self::IncreaseFontSize,
             "decrease_font_size" => Self::DecreaseFontSize,
@@ -694,6 +703,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+f", "search"),
     ("ctrl+shift+h", "show_scrollback"),
     ("ctrl+shift+b", "toggle_broadcast"),
+    ("ctrl+shift+k", "clear_scrollback"),
     ("ctrl+shift+p", "command_palette"),
     ("ctrl+shift+f2", "settings"),
     ("ctrl+shift+equal", "increase_font_size"),

@@ -94,6 +94,8 @@ trail = false                        # a short fading streak behind the cursor w
 # "shift+page_down" = "scroll_page_down"
 # "ctrl+shift+home" = "scroll_home"
 # "ctrl+shift+end" = "scroll_end"
+# "ctrl+shift+k" = "clear_scrollback"       (and the screen, at a prompt)
+# Unbound by default: copy_cwd, open_cwd
 #
 # Shell integration
 # "ctrl+shift+z" = "previous_prompt"

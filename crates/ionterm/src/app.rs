@@ -957,6 +957,51 @@ impl App {
                     w.toggle_broadcast();
                 }
             }
+            Action::ClearScrollback => {
+                let Some(w) = &mut self.window else { return };
+                let pane = w.active_pane();
+                let mut term = pane.lock();
+                term.clear_scrollback();
+                // At a prompt the screen goes too: ctrl+l has the shell redraw it.
+                let at_prompt = term.at_shell_prompt();
+                drop(term);
+                if at_prompt {
+                    pane.write(b"\x0c");
+                }
+                let id = pane.id;
+                w.search_output(id);
+                w.window.request_redraw();
+            }
+            Action::CopyCwd => {
+                let Some(w) = &self.window else { return };
+                let pane = w.active_pane();
+                let dir = match &pane.remote_cwd {
+                    Some(remote) if pane.connection.is_some() || pane.detected_ssh.is_some() => Some(remote.clone()),
+                    _ => pane.working_dir().map(|d| d.display().to_string()),
+                };
+                match dir {
+                    Some(dir) => {
+                        if let Some(w) = &mut self.window {
+                            w.show_toast(format!("Copied {dir}"));
+                        }
+                        self.set_clipboard(dir, false);
+                    }
+                    None => {
+                        if let Some(w) = &mut self.window {
+                            w.show_toast("Don't know this pane's directory");
+                        }
+                    }
+                }
+            }
+            Action::OpenCwd => {
+                let Some(w) = &mut self.window else { return };
+                let pane = w.active_pane();
+                if pane.connection.is_some() || pane.detected_ssh.is_some() {
+                    w.show_toast("That directory is on the server: ctrl+shift+o browses it");
+                } else if let Some(dir) = pane.working_dir() {
+                    crate::files::reveal(&dir);
+                }
+            }
             Action::CommandPalette => self.open_command_palette(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
