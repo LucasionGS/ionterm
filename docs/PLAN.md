@@ -205,7 +205,7 @@ Phase 3: files
 - [x] Session restore (`[session] restore`, off by default): tabs, split trees with their ratios, layouts, folders, SSH hosts, tab titles and colours, saved every few seconds when they change and on window close (`$XDG_STATE_HOME/ionterm/session.toml`). Closing the last tab ends the session; with several windows the first owns it. Scrollback isn't kept
 - [x] Broadcast input (ctrl+shift+b): typing and pasting go to every pane of the tab, each key encoded for that pane's modes; yellow borders and a broadcast tab icon while on
 - [x] Background image (`[window] background_image`, PNG/JPEG/WebP, cover-fitted, `background_image_opacity`; reloads live, errors in a toast)
-- Cursor trail
+- [x] Cursor trail (`[cursor] trail`, off by default): jumps of more than two cells leave a tapering streak that eases into the cursor over 160 ms (`app/trail.rs`)
 
 ### v0.4: Ionix and Windows
 - Styler section upstreamed into the Ionix repo; ionterm replaces kitty in the ISO, Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab

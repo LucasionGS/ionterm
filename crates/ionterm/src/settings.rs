@@ -79,6 +79,7 @@ pub const SECTIONS: &[Section] = &[
             setting("font", "ligatures", "Ligatures", "Join -> != === and friends into one glyph.", Control::Toggle),
             setting("cursor", "shape", "Cursor shape", "Programs can still ask for their own.", Control::Choice(CURSOR_SHAPES)),
             setting("cursor", "blink_interval", "Cursor blink", "Seconds per blink; 0 keeps it steady.", Control::Number { min: 0.0, max: 2.0, step: 0.1, decimals: 1, unit: "s" }),
+            setting("cursor", "trail", "Cursor trail", "A short streak behind the cursor when it jumps, so your eye can follow it.", Control::Toggle),
             setting("window", "opacity", "Background opacity", "Unset follows the theme.", Control::Optional { min: 0.2, max: 1.0, step: 0.05, unset: "Theme" }),
             setting("window", "background_image", "Background image", "A PNG, JPEG or WebP behind the text; empty for none.", Control::Text { placeholder: "~/Pictures/wallpaper.jpg" }),
             setting("window", "background_image_opacity", "Image strength", "How strongly the picture shows through.", Control::Number { min: 0.05, max: 1.0, step: 0.05, decimals: 2, unit: "" }),
@@ -192,6 +193,7 @@ pub fn value_of(config: &Config, setting: &Setting) -> Value {
         ("terminal", "confirm_multiline_paste") => Value::Bool(config.terminal.confirm_multiline_paste),
         ("terminal", "scrollback_pager") => Value::Text(config.terminal.scrollback_pager.clone()),
         ("terminal", "remote_control") => Value::Bool(config.terminal.remote_control),
+        ("cursor", "trail") => Value::Bool(config.cursor.trail),
         ("session", "restore") => Value::Bool(config.session.restore),
         ("layouts", "border_width") => Value::Number(f64::from(config.layouts.border_width)),
         ("notifications", "command_done_after") => Value::Number(f64::from(config.notifications.command_done_after)),
@@ -1020,7 +1022,7 @@ mod tests {
         );
         // Opacity: unset (theme) steps down into numbers.
         assert_eq!(
-            page.step(5, -1, &config),
+            page.step(6, -1, &config),
             Some(Request::Set {
                 section: "window",
                 key: "opacity",

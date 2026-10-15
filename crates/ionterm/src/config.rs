@@ -355,6 +355,8 @@ pub struct CursorConfig {
     pub shape: CursorShapeConfig,
     /// Seconds per blink phase; 0 disables blinking.
     pub blink_interval: f32,
+    /// A fading streak behind the cursor when it jumps.
+    pub trail: bool,
 }
 
 impl Default for CursorConfig {
@@ -362,6 +364,7 @@ impl Default for CursorConfig {
         Self {
             shape: CursorShapeConfig::Beam,
             blink_interval: 0.5,
+            trail: false,
         }
     }
 }

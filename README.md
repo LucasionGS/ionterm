@@ -8,7 +8,7 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 ## Key Features
 
 - **GPU rendering**: everything is drawn with wgpu (Vulkan on Linux, DX12 on Windows), so scrolling through a huge log doesn't heat your lap.
-- **Ionix theming**: plugs into the Ionix styler like kitty and ioexplorer do, wallpaper-adaptive colours included. Switch themes and the open terminal recolours itself. Want your wallpaper behind the text? Set `background_image` and pick how strongly it shows.
+- **Ionix theming**: plugs into the Ionix styler like kitty and ioexplorer do, wallpaper-adaptive colours included. Switch themes and the open terminal recolours itself. Want your wallpaper behind the text? Set `background_image` and pick how strongly it shows. Like a bit of motion? `trail = true` leaves a quick streak behind the cursor when it jumps.
 - **Live config**: edit `ionterm.toml` and the change shows up while you're still in the editor.
 - **Ligatures and Nerd Fonts**: `->`, `!=` and `===` join up, and icons render, including Powerline segments.
 - **Pixel-perfect box drawing**: lines, blocks, rounded corners and Powerline arrows are drawn by ionterm itself, so TUIs look sharp in any font.

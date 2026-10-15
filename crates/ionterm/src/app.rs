@@ -11,6 +11,7 @@ mod rzsz;
 mod search;
 mod session;
 mod settings;
+mod trail;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -164,6 +165,8 @@ struct TermWindow {
     search: Option<search::SearchState>,
     /// A split border being dragged with the mouse.
     split_drag: Option<layout::SplitBorder>,
+    /// The streak behind a jumping cursor.
+    trail: trail::Trail,
 }
 
 struct TabDrag {
@@ -329,6 +332,7 @@ impl App {
             hints: None,
             search: None,
             split_drag: None,
+            trail: trail::Trail::default(),
         };
         w.drops = dnd::listen(&w.window, self.proxy.clone());
         match background::load(&self.config.window) {
@@ -2147,6 +2151,17 @@ impl TermWindow {
                 (snapshot, frame, p.origin, p.area)
             })
             .collect();
+        let m = self.renderer.cell_metrics();
+        // The keyboard's cursor, in pixels, for the trail.
+        let cursor = frames
+            .iter()
+            .find(|(_, frame, _, _)| frame.focused)
+            .and_then(|(snapshot, _, origin, _)| {
+                let cursor = snapshot.cursor.as_ref().filter(|_| snapshot.display_offset == 0)?;
+                let width = if cursor.wide { 2.0 * m.width } else { m.width };
+                Some([origin[0] + cursor.col as f32 * m.width, origin[1] + cursor.row as f32 * m.height, width, m.height])
+            });
+        let tab_id = tab.id;
         let views: Vec<PaneView> = frames
             .iter()
             .map(|(snapshot, frame, origin, a)| PaneView {
@@ -2158,9 +2173,13 @@ impl TermWindow {
             .collect();
         let mut items = self.borders(theme, area);
         let infos = self.tab_infos(config);
-        let m = self.renderer.cell_metrics();
         let scale = self.scale_factor as f32;
         let mut animating = false;
+        if config.cursor.trail {
+            let now = Instant::now();
+            self.trail.update(tab_id, cursor, now);
+            animating |= self.trail.draw(now, theme.cursor.0, &mut items);
+        }
         if let Some(layout) = self.bar_layout(config, &infos) {
             let (offsets, still_moving) = self.tab_motion(&layout);
             animating = still_moving;

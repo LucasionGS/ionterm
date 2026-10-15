@@ -57,6 +57,7 @@ open_file = ""                       # command for picked files: {path} {line} {
 [cursor]
 shape = "beam"                       # block | beam | underline
 blink_interval = 0.5                 # seconds, 0 = no blinking
+trail = false                        # a short fading streak behind the cursor when it jumps
 
 [keybindings]
 # Merged over the defaults; set an action to "none" to unbind a default.
