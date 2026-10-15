@@ -23,6 +23,8 @@ use font::{AtlasFull, Fonts, GlyphPiece};
 const KIND_SOLID: u32 = 0;
 const KIND_MASK: u32 = 1;
 const KIND_COLOR: u32 = 2;
+/// The off-screen frame text is blended into: linear light, with headroom.
+const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Width of the beam cursor and the outline of the unfocused cursor, in pixels.
 const CURSOR_LINE: f32 = 2.0;
 
@@ -87,8 +89,15 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// The format rendered into; `config.format` without any sRGB suffix.
+    view_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    /// Linear-light frame, encoded to sRGB onto the surface by the blit pass.
+    frame_view: wgpu::TextureView,
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_layout: wgpu::BindGroupLayout,
+    blit_bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     instances: wgpu::Buffer,
     instance_capacity: usize,
@@ -124,21 +133,27 @@ impl Renderer {
         .context("creating the GPU device")?;
 
         let caps = surface.get_capabilities(&adapter);
-        // Colours are blended in sRGB space, like every other terminal, so a
-        // non-sRGB surface format is preferred.
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
+        // Theme colours are sRGB values written as-is and blended in sRGB
+        // space, like every other terminal. That needs a plain 8-bit UNORM
+        // target: an `*Srgb` format would encode them a second time, and a
+        // float format (Rgba16Float) is read by the compositor as linear
+        // light, which washes dark backgrounds out to grey. When only sRGB
+        // formats exist, we render through a non-sRGB view of one.
+        let format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
+            .into_iter()
+            .find(|f| caps.formats.contains(f))
+            .or_else(|| caps.formats.iter().copied().find(|f| f.is_srgb()))
             .or(caps.formats.first().copied())
             .ok_or_else(|| anyhow!("the window surface reports no formats"))?;
+        let view_format = format.remove_srgb_suffix();
         let supports_transparency = caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied);
         let alpha_mode = if supports_transparency {
             wgpu::CompositeAlphaMode::PreMultiplied
         } else {
             caps.alpha_modes[0]
         };
+        tracing::debug!("surface formats {:?}, alpha modes {:?}", caps.formats, caps.alpha_modes);
+        tracing::info!("surface format {format:?} (drawn as {view_format:?}), alpha {alpha_mode:?}");
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -147,7 +162,7 @@ impl Renderer {
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
             alpha_mode,
-            view_formats: vec![],
+            view_formats: if view_format == format { vec![] } else { vec![view_format] },
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
@@ -221,7 +236,7 @@ impl Renderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: FRAME_FORMAT,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -229,6 +244,56 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ionterm blit shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
+        });
+        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ionterm blit layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ionterm blit pipeline layout"),
+            bind_group_layouts: &[Some(&blit_layout)],
+            immediate_size: 0,
+        });
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ionterm blit pipeline"),
+            layout: Some(&blit_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: view_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let frame_view = create_frame(&device, config.width, config.height);
+        let blit_bind_group = create_blit_bind_group(&device, &blit_layout, &frame_view);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("glyph sampler"),
@@ -252,8 +317,13 @@ impl Renderer {
             device,
             queue,
             config,
+            view_format,
             pipeline,
             bind_group,
+            frame_view,
+            blit_pipeline,
+            blit_layout,
+            blit_bind_group,
             uniforms,
             instances,
             instance_capacity,
@@ -305,9 +375,14 @@ impl Renderer {
         if width == 0 || height == 0 {
             return;
         }
+        if (width, height) == (self.config.width, self.config.height) {
+            return;
+        }
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        self.frame_view = create_frame(&self.device, width, height);
+        self.blit_bind_group = create_blit_bind_group(&self.device, &self.blit_layout, &self.frame_view);
     }
 
     pub fn render(&mut self, snapshot: &Snapshot, frame: FrameState) {
@@ -347,7 +422,10 @@ impl Renderer {
             }),
         );
 
-        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.view_format),
+            ..Default::default()
+        });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("ionterm frame"),
         });
@@ -358,11 +436,12 @@ impl Renderer {
             } else {
                 1.0
             };
-            let channel = |v: u8| f64::from(v) / 255.0 * alpha;
+            // The frame is linear light, so the clear colour is too.
+            let channel = |v: u8| f64::from(srgb_to_linear(f32::from(v) / 255.0)) * alpha;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ionterm pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.frame_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -386,6 +465,27 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.instances.slice(..));
                 pass.draw(0..4, 0..instances.len() as u32);
             }
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ionterm blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_bind_group(0, &self.blit_bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(texture);
@@ -619,6 +719,40 @@ fn rgba(c: Rgb, alpha: f32) -> [f32; 4] {
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let lerp = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Rgb::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn create_frame(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("linear frame"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FRAME_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_blit_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, frame: &wgpu::TextureView) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ionterm blit bind group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(frame),
+        }],
+    })
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {

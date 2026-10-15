@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent, Weight,
+    Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent, Weight,
 };
 
 use crate::atlas::{Atlas, AtlasRegion};
@@ -233,10 +233,14 @@ impl Fonts {
 }
 
 fn attrs(options: &FontOptions) -> Attrs<'_> {
+    // swash hints harder than FreeType's "slight" mode that kitty and most
+    // Linux apps use through fontconfig, which bulks up strokes. Unhinted
+    // outlines match kitty's rendering far more closely.
+    let base = Attrs::new().cache_key_flags(CacheKeyFlags::DISABLE_HINTING);
     if options.family.is_empty() {
-        Attrs::new().family(Family::Monospace)
+        base.family(Family::Monospace)
     } else {
-        Attrs::new().family(Family::Name(&options.family))
+        base.family(Family::Name(&options.family))
     }
 }
 
@@ -261,6 +265,25 @@ fn measure(system: &mut FontSystem, options: &FontOptions) -> CellMetrics {
         tracing::warn!("no font could shape 'M'; using estimated cell metrics");
         return fallback;
     };
+    if let Some(face) = system.db().face(glyph.font_id) {
+        let source = match &face.source {
+            cosmic_text::fontdb::Source::File(path) | cosmic_text::fontdb::Source::SharedFile(path, _) => {
+                path.display().to_string()
+            }
+            _ => "memory".to_string(),
+        };
+        let matched = options.family.is_empty()
+            || face.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(&options.family));
+        if matched {
+            tracing::info!("font: {} ({source})", face.post_script_name);
+        } else {
+            tracing::warn!(
+                "font family {:?} not found, falling back to {} ({source})",
+                options.family,
+                face.post_script_name
+            );
+        }
+    }
     let Some(font) = system.get_font(glyph.font_id, Weight::NORMAL) else {
         return fallback;
     };

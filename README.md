@@ -3,7 +3,7 @@
 A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper colours, draws its box lines without gaps, and has room for kitty-style tricks.
 
 ![ionterm showing box drawing, Powerline segments, ligatures and emoji](docs/screenshot.png)
-<sup>The default Ionix theme, mid-demo. Yes, the box lines actually touch.</sup>
+<sup>The Ionix theme, mid-demo. Yes, the box lines actually touch.</sup>
 
 ## Key Features
 
@@ -23,7 +23,7 @@ Coming up: tabs and splits, kitty graphics and Sixel images, shell integration, 
 Config lives in `~/.config/ionterm/` (`%APPDATA%\ionterm\` on Windows):
 
 - `ionterm.toml`: fonts, window, cursor, scrollback and keybindings. Every key is optional; [extras/ionterm.toml](extras/ionterm.toml) lists them all with their defaults.
-- `theme.toml`: colours. The Ionix styler links this file in for you; without one you get the classic Ionix palette.
+- `theme.toml`: colours. The Ionix styler links this file in for you; without one you get the Ionix palette on a soft dark background.
 
 Run `ionterm -e <command>` to start something other than your shell, for example `ionterm -e btop`.
 

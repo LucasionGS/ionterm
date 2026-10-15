@@ -64,11 +64,11 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             foreground: hex("#e2d9f3"),
-            background: hex("#0f0a18"),
+            background: hex(DEFAULT_BACKGROUND),
             background_opacity: 0.92,
             cursor: hex("#9b59b6"),
-            cursor_text: Some(hex("#0f0a18")),
-            selection_foreground: Some(hex("#0f0a18")),
+            cursor_text: Some(hex(DEFAULT_BACKGROUND)),
+            selection_foreground: Some(hex(DEFAULT_BACKGROUND)),
             selection_background: hex("#9b59b6"),
             url: hex("#a855f7"),
             tab_bar: TabBarTheme::default(),
@@ -80,8 +80,8 @@ impl Default for Theme {
 impl Default for TabBarTheme {
     fn default() -> Self {
         Self {
-            background: hex("#0f0a18"),
-            active_foreground: hex("#0f0a18"),
+            background: hex(DEFAULT_BACKGROUND),
+            active_foreground: hex(DEFAULT_BACKGROUND),
             active_background: hex("#9b59b6"),
             inactive_foreground: hex("#c4b5fd"),
             inactive_background: hex("#1a1025"),
@@ -96,6 +96,10 @@ impl Default for PaletteTheme {
         }
     }
 }
+
+/// The background without a theme, also used for text drawn on the accent
+/// colour (cursor, selection, active tab) so it always matches.
+const DEFAULT_BACKGROUND: &str = "#0b0b0f";
 
 const DEFAULT_ANSI: [&str; 16] = [
     "#1a1025", "#e74c3c", "#2ecc71", "#f39c12", "#7c3aed", "#9b59b6", "#1abc9c", "#c4b5fd", "#2d2d3f",
