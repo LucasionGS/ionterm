@@ -125,8 +125,29 @@ fn base_char(event: &KeyEvent) -> Option<char> {
     }
 }
 
+/// The character a dead key would add (´ on a Danish keyboard), for keys
+/// that have no plain character of their own.
+fn dead_char(event: &KeyEvent) -> Option<char> {
+    match event.key_without_modifiers() {
+        Key::Dead(c) => c,
+        _ => None,
+    }
+}
+
+/// Windows reports AltGr as ctrl+alt. A key that typed a printable symbol
+/// with both held is AltGr typing (`{`, `|`, `@`), not a ctrl+alt shortcut.
+fn without_altgr(event: &KeyEvent, mods: ModifiersState) -> ModifiersState {
+    let typed = event.text.as_deref().is_some_and(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    if cfg!(windows) && typed && mods.control_key() && mods.alt_key() {
+        mods - ModifiersState::CONTROL - ModifiersState::ALT
+    } else {
+        mods
+    }
+}
+
 /// Encodes a key event for the PTY. Returns `None` when nothing is sent.
 pub fn encode_key(event: &KeyEvent, mods: ModifiersState, mode: TermMode, kitty_flags: u8) -> Option<Vec<u8>> {
+    let mods = without_altgr(event, mods);
     if kitty_flags & (DISAMBIGUATE | REPORT_EVENT_TYPES | REPORT_ALTERNATES | REPORT_ALL_AS_ESCAPES | REPORT_TEXT) == 0 {
         if event.state != ElementState::Pressed {
             return None;
@@ -251,14 +272,17 @@ fn encode_kitty(event: &KeyEvent, mods: ModifiersState, flags: u8) -> Option<Vec
     let (number, terminator, alternate) = match functional {
         Some(f) => (f.number, f.terminator, None),
         None => {
-            let base = base_char(event)?;
             // Plain typing stays plain text unless every key must be an escape.
+            // Checked before the key itself: AltGr symbols on a dead key (`|`
+            // on the Danish ´ key) have no plain key, only their text.
             if !all_escapes && bits & !1 == 0 && text.is_some() {
                 if !pressed {
                     return None;
                 }
                 return text.map(|t| t.as_bytes().to_vec());
             }
+            let typed = || text.and_then(|t| t.chars().next());
+            let base = base_char(event).or_else(|| dead_char(event)).or_else(typed)?;
             let shifted = (flags & REPORT_ALTERNATES != 0 && mods.shift_key())
                 .then(|| match &event.logical_key {
                     Key::Character(s) => s.chars().next().filter(|&c| c != base),

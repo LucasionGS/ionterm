@@ -2,13 +2,15 @@
 # Sends real keystrokes to a fresh ionterm window through Hyprland and prints
 # the bytes the application received, in legacy mode and three kitty keyboard
 # protocol modes. Keys go to that window by PID, so focus doesn't matter.
+# MOD5|dead_acute is AltGr+´ on a Danish keyboard: it must type `|` in every
+# mode, though the key alone is a dead key.
 #
 # Usage: scripts/keytest.sh [path/to/ionterm]   (default: target/release/ionterm)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IONTERM="${1:-$ROOT/target/release/ionterm}"
 LOG="$(mktemp)"
-KEYS=("|a" "SHIFT|a" "CTRL|a" "ALT|x" "|Return" "SHIFT|Return" "|Escape" "|Up" "CTRL|Up" "|F1" "|F5" "SHIFT|Tab" "|BackSpace" "CTRL|BackSpace")
+KEYS=("|a" "SHIFT|a" "CTRL|a" "ALT|x" "MOD5|dead_acute" "|Return" "SHIFT|Return" "|Escape" "|Up" "CTRL|Up" "|F1" "|F5" "SHIFT|Tab" "|BackSpace" "CTRL|BackSpace")
 
 if ! command -v hyprctl &>/dev/null; then
   echo "This test needs Hyprland (hyprctl not found)." >&2
