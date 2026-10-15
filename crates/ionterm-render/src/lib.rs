@@ -23,6 +23,7 @@ use font::{AtlasFull, Fonts, GlyphPiece};
 const KIND_SOLID: u32 = 0;
 const KIND_MASK: u32 = 1;
 const KIND_COLOR: u32 = 2;
+const KIND_ROUNDED: u32 = 3;
 /// The off-screen frame text is blended into: linear light, with headroom.
 const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Width of the beam cursor and the outline of the unfocused cursor, in pixels.
@@ -31,8 +32,6 @@ const CURSOR_LINE: f32 = 2.0;
 /// Visual settings that come from the config and theme rather than the terminal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderStyle {
-    /// Space around the grid, in pixels.
-    pub padding: f32,
     /// Opacity of the default background; other backgrounds stay opaque.
     pub background_opacity: f32,
     pub cursor_shape: CursorShape,
@@ -61,6 +60,57 @@ pub enum LinkHighlight {
     Hyperlink(u32),
     /// A span in viewport coordinates, like a selection.
     Span(Selection),
+}
+
+/// One terminal pane to draw.
+pub struct PaneView<'a> {
+    pub snapshot: &'a Snapshot,
+    /// Top-left corner of the grid, in pixels.
+    pub origin: [f32; 2],
+    /// The pane's whole area (x, y, width, height) including padding. Filled
+    /// when the pane's background differs from the window's.
+    pub area: [f32; 4],
+    pub frame: FrameState,
+}
+
+/// Everything around the panes, drawn on top of them in order.
+pub struct Chrome<'a> {
+    /// The window's background (theme background).
+    pub background: Rgb,
+    pub items: &'a [ChromeItem],
+}
+
+/// A drawing primitive for window chrome: tab bars, borders, menus.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChromeItem {
+    Rect {
+        rect: [f32; 4],
+        color: Rgb,
+        alpha: f32,
+    },
+    RoundedRect {
+        rect: [f32; 4],
+        radius: f32,
+        /// Round only the top corners (a tab).
+        top_only: bool,
+        color: Rgb,
+        alpha: f32,
+    },
+    /// Monospace text: one cell per column, `y` at the top of the line.
+    /// Box-drawing and Powerline characters are drawn procedurally.
+    Text {
+        text: String,
+        x: f32,
+        y: f32,
+        color: Rgb,
+        bold: bool,
+    },
+}
+
+/// Columns a string occupies in the grid (wide characters count twice).
+pub fn text_columns(text: &str) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    text.chars().map(|c| c.width().unwrap_or(0)).sum()
 }
 
 /// A selected span in viewport coordinates, start before end. Rows may lie
@@ -353,31 +403,6 @@ impl Renderer {
         self.fonts.options()
     }
 
-    /// How many columns and rows fit in a surface of this size.
-    pub fn grid_size(&self, width: u32, height: u32) -> (usize, usize) {
-        let m = self.fonts.metrics();
-        let usable_w = (width as f32 - 2.0 * self.style.padding).max(0.0);
-        let usable_h = (height as f32 - 2.0 * self.style.padding).max(0.0);
-        (
-            ((usable_w / m.width) as usize).max(2),
-            ((usable_h / m.height) as usize).max(1),
-        )
-    }
-
-    /// The cell under a point in surface pixels, clamped to the grid.
-    /// The pixel bounds of the grid's rows: (top, bottom).
-    pub fn grid_vertical_bounds(&self, rows: usize) -> (f32, f32) {
-        let top = self.style.padding;
-        (top, top + rows as f32 * self.fonts.metrics().height)
-    }
-
-    pub fn cell_at(&self, x: f64, y: f64, cols: usize, rows: usize) -> (usize, usize) {
-        let m = self.fonts.metrics();
-        let col = ((x as f32 - self.style.padding) / m.width).max(0.0) as usize;
-        let row = ((y as f32 - self.style.padding) / m.height).max(0.0) as usize;
-        (col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1)))
-    }
-
     pub fn set_font(&mut self, font: FontOptions) {
         self.fonts.set_options(font);
         self.atlas.clear();
@@ -401,7 +426,7 @@ impl Renderer {
         self.blit_bind_group = create_blit_bind_group(&self.device, &self.blit_layout, &self.frame_view);
     }
 
-    pub fn render(&mut self, snapshot: &Snapshot, frame: FrameState) {
+    pub fn render(&mut self, panes: &[PaneView], chrome: &Chrome) {
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -416,12 +441,12 @@ impl Renderer {
 
         let mut instances = std::mem::take(&mut self.scratch);
         instances.clear();
-        if !self.build_instances(snapshot, frame, &mut instances) {
+        if !self.build_frame(panes, chrome, &mut instances) {
             // The atlas filled up mid-frame: start it over and rebuild once.
             self.atlas.clear();
             self.fonts.clear_rasters();
             instances.clear();
-            self.build_instances(snapshot, frame, &mut instances);
+            self.build_frame(panes, chrome, &mut instances);
         }
 
         if instances.len() > self.instance_capacity {
@@ -446,7 +471,7 @@ impl Renderer {
             label: Some("ionterm frame"),
         });
         {
-            let bg = snapshot.palette.background;
+            let bg = chrome.background;
             let alpha = if self.supports_transparency {
                 f64::from(self.style.background_opacity.clamp(0.0, 1.0))
             } else {
@@ -510,9 +535,83 @@ impl Renderer {
 
     /// Appends every quad for the frame. Returns `false` if the atlas ran out
     /// of space part-way through.
-    fn build_instances(&mut self, snapshot: &Snapshot, frame: FrameState, out: &mut Vec<Instance>) -> bool {
+    fn build_frame(&mut self, panes: &[PaneView], chrome: &Chrome, out: &mut Vec<Instance>) -> bool {
+        let opacity = self.style.background_opacity.clamp(0.0, 1.0);
+        for pane in panes {
+            let bg = pane.snapshot.palette.background;
+            if bg != chrome.background {
+                out.push(solid(pane.area, bg, opacity));
+            }
+            if !self.build_pane(pane.snapshot, pane.origin, pane.frame, out) {
+                return false;
+            }
+        }
+        for item in chrome.items {
+            match item {
+                ChromeItem::Rect { rect, color, alpha } => out.push(solid(*rect, *color, *alpha)),
+                ChromeItem::RoundedRect {
+                    rect,
+                    radius,
+                    top_only,
+                    color,
+                    alpha,
+                } => out.push(Instance {
+                    rect: *rect,
+                    uv: [*radius, if *top_only { 1.0 } else { 0.0 }, 0.0, 0.0],
+                    color: rgba(*color, *alpha),
+                    kind: KIND_ROUNDED,
+                    _pad: [0; 3],
+                }),
+                ChromeItem::Text { text, x, y, color, bold } => {
+                    if !self.push_text(text, *x, *y, *color, *bold, out) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Draws a line of text at a pixel position, one cell per column.
+    fn push_text(&mut self, text: &str, x: f32, y: f32, color: Rgb, bold: bool, out: &mut Vec<Instance>) -> bool {
         let m = self.fonts.metrics();
-        let pad = self.style.padding;
+        let mut columns = Vec::new();
+        let mut run = String::new();
+        let mut col = 0;
+        for ch in text.chars() {
+            let cx = x + col as f32 * m.width;
+            if boxdraw::is_procedural(ch) {
+                match self.fonts.procedural(&self.queue, &mut self.atlas, ch) {
+                    Ok(Some(piece)) => out.push(glyph_instance(&piece, cx, y + m.baseline, color)),
+                    Ok(None) => {}
+                    Err(AtlasFull) => return false,
+                }
+                // Keep the shaped run's columns aligned: pad with a space.
+                columns.push((run.len(), col));
+                run.push(' ');
+            } else {
+                columns.push((run.len(), col));
+                run.push(ch);
+            }
+            col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        let glyphs = self.fonts.shape(&run, bold, false);
+        for glyph in glyphs.iter() {
+            let slot = columns.partition_point(|&(byte, _)| byte <= glyph.cluster).saturating_sub(1);
+            let piece = match self.fonts.raster(&self.queue, &mut self.atlas, glyph.key) {
+                Ok(Some(piece)) => piece,
+                Ok(None) => continue,
+                Err(AtlasFull) => return false,
+            };
+            let gx = x + columns.get(slot).map_or(0, |&(_, col)| col) as f32 * m.width + glyph.dx as f32;
+            out.push(glyph_instance(&piece, gx, y + m.baseline + glyph.dy as f32, color));
+        }
+        true
+    }
+
+    fn build_pane(&mut self, snapshot: &Snapshot, origin: [f32; 2], frame: FrameState, out: &mut Vec<Instance>) -> bool {
+        let m = self.fonts.metrics();
+        let [ox, oy] = origin;
         let palette = &snapshot.palette;
 
         let cursor = snapshot.cursor.filter(|c| {
@@ -531,12 +630,12 @@ impl Renderer {
         let mut overlay = Vec::new();
         let mut fg_colors = Vec::new();
         for (row, line) in snapshot.lines.iter().enumerate() {
-            let y = pad + row as f32 * m.height;
+            let y = oy + row as f32 * m.height;
 
             // Backgrounds, and each cell's final text colour.
             fg_colors.clear();
             for (col, cell) in line.cells.iter().enumerate() {
-                let x = pad + col as f32 * m.width;
+                let x = ox + col as f32 * m.width;
                 let (mut fg, mut bg) = cell_colors(cell, palette);
                 if frame.selection.is_some_and(|s| s.contains(row as isize, col)) {
                     bg = Some(self.style.selection_background);
@@ -577,7 +676,7 @@ impl Renderer {
                 if boxdraw::is_procedural(cell.c) && cell.extra.is_none() {
                     match self.fonts.procedural(&self.queue, &mut self.atlas, cell.c) {
                         Ok(Some(piece)) => {
-                            overlay.push(glyph_instance(&piece, pad + col as f32 * m.width, y + m.baseline, fg_colors[col]))
+                            overlay.push(glyph_instance(&piece, ox + col as f32 * m.width, y + m.baseline, fg_colors[col]))
                         }
                         Ok(None) => {}
                         Err(AtlasFull) => return false,
@@ -621,7 +720,7 @@ impl Renderer {
                         Ok(None) => continue,
                         Err(AtlasFull) => return false,
                     };
-                    let x = pad + glyph_col as f32 * m.width + glyph.dx as f32;
+                    let x = ox + glyph_col as f32 * m.width + glyph.dx as f32;
                     let baseline = y + m.baseline + glyph.dy as f32;
                     overlay.push(glyph_instance(&piece, x, baseline, fg_colors[glyph_col]));
                 }
@@ -632,8 +731,8 @@ impl Renderer {
 
         // Cursor shapes that sit on top of the text.
         if let Some(c) = cursor {
-            let x = pad + c.col as f32 * m.width;
-            let y = pad + c.row as f32 * m.height;
+            let x = ox + c.col as f32 * m.width;
+            let y = oy + c.row as f32 * m.height;
             let w = if c.wide { m.width * 2.0 } else { m.width };
             let color = palette.cursor;
             if !frame.focused {

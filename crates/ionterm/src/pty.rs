@@ -6,7 +6,7 @@
 //! redraw per frame rather than one per read.
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +17,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::app::UserEvent;
 use crate::config::TerminalConfig;
+use crate::layout::PaneId;
 
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -28,7 +29,9 @@ pub struct Pty {
 
 impl Pty {
     pub fn spawn(
+        pane: PaneId,
         config: &TerminalConfig,
+        cwd: Option<&Path>,
         size: PtySize,
         term: Arc<Mutex<Term>>,
         proxy: EventLoopProxy<UserEvent>,
@@ -48,8 +51,8 @@ impl Pty {
             }
             None => CommandBuilder::new_default_prog(),
         };
-        if let Some(home) = dirs::home_dir() {
-            command.cwd(home);
+        if let Some(dir) = cwd.filter(|dir| dir.is_dir()).map(Path::to_path_buf).or_else(dirs::home_dir) {
+            command.cwd(dir);
         }
         command.env("TERM", resolve_term(&config.term));
         command.env("COLORTERM", "truecolor");
@@ -90,11 +93,11 @@ impl Pty {
                         let _ = writer.write_all(&replies);
                         let _ = writer.flush();
                     }
-                    if !wakeup_pending.swap(true, Ordering::AcqRel) && proxy.send_event(UserEvent::Wakeup).is_err() {
+                    if !wakeup_pending.swap(true, Ordering::AcqRel) && proxy.send_event(UserEvent::Wakeup(pane)).is_err() {
                         break;
                     }
                 }
-                let _ = proxy.send_event(UserEvent::ChildExited);
+                let _ = proxy.send_event(UserEvent::ChildExited(pane));
             })
             .context("starting the PTY reader thread")?;
 
@@ -109,6 +112,44 @@ impl Pty {
         let mut writer = self.writer.lock().expect("writer lock poisoned");
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             tracing::debug!("PTY write failed: {error}");
+        }
+    }
+
+    /// The working directory of whatever runs in the foreground (the shell,
+    /// or the program it started). Linux only; elsewhere new panes rely on
+    /// the shell reporting its directory (OSC 7).
+    pub fn current_dir(&self) -> Option<PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            let pid = self
+                .master
+                .process_group_leader()
+                .map(i64::from)
+                .or_else(|| self.child.process_id().map(i64::from))?;
+            std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    /// The name of the program in the foreground (`fish`, `nvim`, `ssh`…),
+    /// for the tab icon. Linux only.
+    pub fn foreground_process(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            let pid = self
+                .master
+                .process_group_leader()
+                .map(i64::from)
+                .or_else(|| self.child.process_id().map(i64::from))?;
+            let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+            Some(name.trim().to_string())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
         }
     }
 

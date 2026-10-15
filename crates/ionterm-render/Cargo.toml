@@ -13,4 +13,5 @@ cosmic-text = "0.19.0"
 ionterm-vt = { version = "0.1.0", path = "../ionterm-vt" }
 pollster = "1.0.1"
 tracing = "0.1.44"
+unicode-width = "0.2.2"
 wgpu = "30.0.1"

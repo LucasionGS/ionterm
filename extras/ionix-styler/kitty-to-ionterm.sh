@@ -36,6 +36,8 @@ convert_theme() {
   toml_color selection_foreground "$(kitty_value "$FILE" selection_foreground)"
   toml_color selection_background "$(kitty_value "$FILE" selection_background)"
   toml_color url "$(kitty_value "$FILE" url_color)"
+  toml_color active_border "$(kitty_value "$FILE" active_border_color)"
+  toml_color inactive_border "$(kitty_value "$FILE" inactive_border_color)"
 
   echo
   echo "[tab_bar]"

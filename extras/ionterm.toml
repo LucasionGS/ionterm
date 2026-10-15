@@ -22,12 +22,45 @@ shell = ""                           # empty = your login shell
 term = "auto"                        # auto = xterm-ionterm if installed, else xterm-256color
 wheel_scroll_lines = 3
 
+[tab_bar]
+style = "tabs"                       # tabs (Windows Terminal style) | slanted | angled | round (kitty Powerline)
+edge = "top"                         # top | bottom
+show = "auto"                        # auto (2+ tabs) | always | never
+max_title_length = 30                # Powerline styles only
+
+[layouts]
+enabled = ["splits", "tall", "fat", "grid", "stack"]   # next_layout cycles these; the first is the default
+border_width = 2                     # logical pixels between panes
+
 [cursor]
 shape = "beam"                       # block | beam | underline
 blink_interval = 0.5                 # seconds, 0 = no blinking
 
 [keybindings]
 # Merged over the defaults; set an action to "none" to unbind a default.
+#
+# Tabs
+# "ctrl+shift+t" = "new_tab"
+# "ctrl+shift+q" = "close_tab"
+# "ctrl+shift+right" = "next_tab"            (also ctrl+tab)
+# "ctrl+shift+left" = "previous_tab"         (also ctrl+shift+tab)
+# "ctrl+shift+period" = "move_tab_forward"
+# "ctrl+shift+comma" = "move_tab_backward"
+# "ctrl+shift+alt+t" = "rename_tab"
+# "alt+1" = "goto_tab 1"                     (alt+1 … alt+9)
+#
+# Panes
+# "ctrl+shift+enter" = "new_split"           (splits along the longer side)
+# "ctrl+shift+w" = "close_pane"
+# "ctrl+shift+right_bracket" = "next_pane"
+# "ctrl+shift+left_bracket" = "previous_pane"
+# "ctrl+shift+f" = "move_pane_forward"
+# "ctrl+shift+b" = "move_pane_backward"
+# "ctrl+shift+l" = "next_layout"
+# Unbound by default: split_right, split_down, focus_left/right/up/down,
+# resize_wider/narrower/taller/shorter, toggle_zoom
+#
+# Everything else
 # "ctrl+shift+c" = "copy"
 # "ctrl+shift+v" = "paste"
 # "shift+insert" = "paste_selection"

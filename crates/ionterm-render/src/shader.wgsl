@@ -15,6 +15,8 @@ struct Uniforms {
 const KIND_SOLID: u32 = 0u;
 const KIND_MASK: u32 = 1u;
 const KIND_COLOR: u32 = 2u;
+// A rounded rectangle: uv.x = corner radius, uv.y = 1 to round only the top corners.
+const KIND_ROUNDED: u32 = 3u;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
@@ -34,6 +36,10 @@ struct VertexOut {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) kind: u32,
+    // Position inside the quad in pixels, and its size (for rounded shapes).
+    @location(3) local: vec2<f32>,
+    @location(4) @interpolate(flat) size: vec2<f32>,
+    @location(5) @interpolate(flat) shape: vec2<f32>,
 };
 
 @vertex
@@ -51,6 +57,9 @@ fn vs_main(@builtin(vertex_index) index: u32, inst: Instance) -> VertexOut {
     out.uv = (inst.uv.xy + corner * inst.uv.zw) / u.atlas_size;
     out.color = vec4<f32>(srgb_to_linear(inst.color.rgb), inst.color.a);
     out.kind = inst.kind;
+    out.local = corner * inst.rect.zw;
+    out.size = inst.rect.zw;
+    out.shape = inst.uv.xy;
     return out;
 }
 
@@ -58,6 +67,19 @@ fn vs_main(@builtin(vertex_index) index: u32, inst: Instance) -> VertexOut {
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if in.kind == KIND_SOLID {
         return vec4<f32>(in.color.rgb * in.color.a, in.color.a);
+    }
+    if in.kind == KIND_ROUNDED {
+        let radius = in.shape.x;
+        let half = in.size * 0.5;
+        var p = in.local - half;
+        // Top-only rounding: below the middle, measure as if square.
+        if in.shape.y > 0.5 && p.y > 0.0 {
+            p.y = min(p.y, half.y - radius);
+        }
+        let q = abs(p) - (half - vec2<f32>(radius));
+        let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+        let coverage = clamp(0.5 - distance, 0.0, 1.0) * in.color.a;
+        return vec4<f32>(in.color.rgb * coverage, coverage);
     }
     let texel = textureSample(atlas, atlas_sampler, in.uv);
     if in.kind == KIND_MASK {

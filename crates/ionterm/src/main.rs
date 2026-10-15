@@ -3,8 +3,13 @@
 mod app;
 mod config;
 mod input;
+mod layout;
 mod links;
+mod menu;
+mod pane;
 mod pty;
+mod tab;
+mod tabbar;
 mod theme;
 
 use std::process::ExitCode;

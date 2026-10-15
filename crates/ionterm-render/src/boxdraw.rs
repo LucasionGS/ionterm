@@ -30,7 +30,7 @@ const BOX_TABLE: [&str; 128] = [
 ];
 
 pub fn is_procedural(c: char) -> bool {
-    matches!(c as u32, 0x2500..=0x257F | 0x2580..=0x259F | 0xE0B0..=0xE0B4 | 0xE0B6)
+    matches!(c as u32, 0x2500..=0x257F | 0x2580..=0x259F | 0xE0B0..=0xE0B4 | 0xE0B6 | 0xE0B8..=0xE0BF)
 }
 
 /// An alpha mask of `width * height` bytes, or `None` if `c` isn't drawn here.
@@ -50,7 +50,7 @@ pub fn render(c: char, width: u32, height: u32, light: u32) -> Option<Vec<u8>> {
             }
         }
         0x2580..=0x259F => canvas.block(cp),
-        0xE0B0..=0xE0B4 | 0xE0B6 => canvas.powerline(cp, light as f32),
+        0xE0B0..=0xE0B4 | 0xE0B6 | 0xE0B8..=0xE0BF => canvas.powerline(cp, light as f32),
         _ => return None,
     }
     Some(canvas.pixels)
@@ -262,6 +262,11 @@ impl Canvas {
                 });
             }
             0xE0B4 => self.fill(|x, y| (x / w).powi(2) + ((y - mid) / mid).powi(2) <= 1.0),
+            // Corner triangles, used for slanted separators.
+            0xE0B8 | 0xE0B9 => self.fill(|x, y| x / w <= y / h),
+            0xE0BA | 0xE0BB => self.fill(|x, y| x / w >= 1.0 - y / h),
+            0xE0BC | 0xE0BD => self.fill(|x, y| x / w <= 1.0 - y / h),
+            0xE0BE | 0xE0BF => self.fill(|x, y| x / w >= y / h),
             0xE0B6 => self.fill(|x, y| ((w - x) / w).powi(2) + ((y - mid) / mid).powi(2) <= 1.0),
             _ => {}
         }

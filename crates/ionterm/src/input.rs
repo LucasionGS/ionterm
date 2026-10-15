@@ -484,6 +484,37 @@ fn named_key_name(named: NamedKey) -> Option<String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    // Tabs
+    NewTab,
+    CloseTab,
+    NextTab,
+    PreviousTab,
+    MoveTabForward,
+    MoveTabBackward,
+    /// 1-based.
+    GotoTab(usize),
+    RenameTab,
+    // Panes
+    /// Splits the active pane along its longer side.
+    NewSplit,
+    SplitRight,
+    SplitDown,
+    ClosePane,
+    NextPane,
+    PreviousPane,
+    MovePaneForward,
+    MovePaneBackward,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
+    ResizeWider,
+    ResizeNarrower,
+    ResizeTaller,
+    ResizeShorter,
+    NextLayout,
+    ToggleZoom,
+    // Everything else
     Copy,
     Paste,
     PasteSelection,
@@ -503,7 +534,37 @@ pub enum Action {
 
 impl Action {
     pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
+        let mut words = s.split_whitespace();
+        let name = words.next()?;
+        if name == "goto_tab" {
+            return words.next()?.parse().ok().filter(|&n| n > 0).map(Self::GotoTab);
+        }
+        Some(match name {
+            "new_tab" => Self::NewTab,
+            "close_tab" => Self::CloseTab,
+            "next_tab" => Self::NextTab,
+            "previous_tab" => Self::PreviousTab,
+            "move_tab_forward" => Self::MoveTabForward,
+            "move_tab_backward" => Self::MoveTabBackward,
+            "rename_tab" | "set_tab_title" => Self::RenameTab,
+            "new_split" | "new_window" => Self::NewSplit,
+            "split_right" => Self::SplitRight,
+            "split_down" => Self::SplitDown,
+            "close_pane" | "close_window" => Self::ClosePane,
+            "next_pane" | "next_window" => Self::NextPane,
+            "previous_pane" | "previous_window" => Self::PreviousPane,
+            "move_pane_forward" => Self::MovePaneForward,
+            "move_pane_backward" => Self::MovePaneBackward,
+            "focus_left" => Self::FocusLeft,
+            "focus_right" => Self::FocusRight,
+            "focus_up" => Self::FocusUp,
+            "focus_down" => Self::FocusDown,
+            "resize_wider" => Self::ResizeWider,
+            "resize_narrower" => Self::ResizeNarrower,
+            "resize_taller" => Self::ResizeTaller,
+            "resize_shorter" => Self::ResizeShorter,
+            "next_layout" => Self::NextLayout,
+            "toggle_zoom" => Self::ToggleZoom,
             "copy" | "copy_to_clipboard" => Self::Copy,
             "paste" | "paste_from_clipboard" => Self::Paste,
             "paste_selection" | "paste_from_selection" => Self::PasteSelection,
@@ -524,6 +585,31 @@ impl Action {
 }
 
 pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
+    ("ctrl+shift+t", "new_tab"),
+    ("ctrl+shift+q", "close_tab"),
+    ("ctrl+shift+right", "next_tab"),
+    ("ctrl+shift+left", "previous_tab"),
+    ("ctrl+tab", "next_tab"),
+    ("ctrl+shift+tab", "previous_tab"),
+    ("ctrl+shift+period", "move_tab_forward"),
+    ("ctrl+shift+comma", "move_tab_backward"),
+    ("ctrl+shift+alt+t", "rename_tab"),
+    ("alt+1", "goto_tab 1"),
+    ("alt+2", "goto_tab 2"),
+    ("alt+3", "goto_tab 3"),
+    ("alt+4", "goto_tab 4"),
+    ("alt+5", "goto_tab 5"),
+    ("alt+6", "goto_tab 6"),
+    ("alt+7", "goto_tab 7"),
+    ("alt+8", "goto_tab 8"),
+    ("alt+9", "goto_tab 9"),
+    ("ctrl+shift+enter", "new_split"),
+    ("ctrl+shift+w", "close_pane"),
+    ("ctrl+shift+right_bracket", "next_pane"),
+    ("ctrl+shift+left_bracket", "previous_pane"),
+    ("ctrl+shift+f", "move_pane_forward"),
+    ("ctrl+shift+b", "move_pane_backward"),
+    ("ctrl+shift+l", "next_layout"),
     ("ctrl+shift+c", "copy"),
     ("ctrl+shift+v", "paste"),
     ("shift+insert", "paste_selection"),
@@ -582,6 +668,14 @@ mod tests {
         assert_eq!(KeyCombo::parse("ctrl+shift++"), Some(KeyCombo { mods: 5, key: "plus".into() }));
         assert_eq!(KeyCombo::parse("Shift+PageUp"), Some(KeyCombo { mods: 1, key: "page_up".into() }));
         assert_eq!(KeyCombo::parse("ctrl+shift"), None);
+    }
+
+    #[test]
+    fn parses_actions_with_arguments() {
+        assert_eq!(Action::parse("goto_tab 3"), Some(Action::GotoTab(3)));
+        assert_eq!(Action::parse("goto_tab 0"), None);
+        assert_eq!(Action::parse("new_window"), Some(Action::NewSplit));
+        assert!(build_bindings(&Default::default()).len() > 30);
     }
 
     #[test]

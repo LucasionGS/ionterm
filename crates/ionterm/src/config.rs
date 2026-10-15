@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::layout::Layout;
+
 pub const CONFIG_FILE: &str = "ionterm.toml";
 pub const THEME_FILE: &str = "theme.toml";
 
@@ -21,6 +23,8 @@ pub struct Config {
     pub window: WindowConfig,
     pub terminal: TerminalConfig,
     pub cursor: CursorConfig,
+    pub tab_bar: TabBarConfig,
+    pub layouts: LayoutConfig,
     /// Key combo → action name, merged over the defaults. `"none"` unbinds.
     pub keybindings: HashMap<String, String>,
 }
@@ -105,6 +109,76 @@ impl Default for TerminalConfig {
             term: "auto".into(),
             wheel_scroll_lines: 3,
             command: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TabBarEdge {
+    #[default]
+    Top,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TabBarStyleConfig {
+    /// Windows Terminal-style rounded tabs with close and new-tab buttons.
+    #[default]
+    Tabs,
+    /// kitty-style Powerline strips.
+    Angled,
+    Slanted,
+    Round,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShowTabBar {
+    /// Only with two or more tabs.
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TabBarConfig {
+    pub edge: TabBarEdge,
+    pub style: TabBarStyleConfig,
+    pub show: ShowTabBar,
+    /// Longer titles are cut with an ellipsis (Powerline styles; the tabs
+    /// style fits titles to the tab width).
+    pub max_title_length: usize,
+}
+
+impl Default for TabBarConfig {
+    fn default() -> Self {
+        Self {
+            edge: TabBarEdge::Top,
+            style: TabBarStyleConfig::Tabs,
+            show: ShowTabBar::Auto,
+            max_title_length: 30,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LayoutConfig {
+    /// Layouts `next_layout` cycles through, in order. The first is used for new tabs.
+    pub enabled: Vec<Layout>,
+    /// Border between panes, in logical pixels.
+    pub border_width: f32,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            enabled: vec![Layout::Splits, Layout::Tall, Layout::Fat, Layout::Grid, Layout::Stack],
+            border_width: 2.0,
         }
     }
 }

@@ -880,6 +880,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "winit",
 ]
 
@@ -893,6 +894,7 @@ dependencies = [
  "ionterm-vt",
  "pollster",
  "tracing",
+ "unicode-width",
  "wgpu",
 ]
 

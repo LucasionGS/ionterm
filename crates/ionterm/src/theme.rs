@@ -39,6 +39,10 @@ pub struct Theme {
     pub selection_foreground: Option<ThemeColor>,
     pub selection_background: ThemeColor,
     pub url: ThemeColor,
+    /// Border of the active pane. `None` = the active tab colour.
+    pub active_border: Option<ThemeColor>,
+    /// Borders between other panes. `None` = the inactive tab colour.
+    pub inactive_border: Option<ThemeColor>,
     pub tab_bar: TabBarTheme,
     pub palette: PaletteTheme,
 }
@@ -71,6 +75,8 @@ impl Default for Theme {
             selection_foreground: Some(hex(DEFAULT_BACKGROUND)),
             selection_background: hex("#9b59b6"),
             url: hex("#a855f7"),
+            active_border: None,
+            inactive_border: None,
             tab_bar: TabBarTheme::default(),
             palette: PaletteTheme::default(),
         }
