@@ -264,7 +264,7 @@ fn editor_command(editor: Vec<String>, path: &Path, line: Option<u32>, col: Opti
 }
 
 /// The user's editor: `$VISUAL`, `$EDITOR`, or the first common one found.
-fn editor() -> Option<Vec<String>> {
+pub fn editor() -> Option<Vec<String>> {
     let from_env = ["VISUAL", "EDITOR"]
         .iter()
         .filter_map(|var| std::env::var(var).ok())

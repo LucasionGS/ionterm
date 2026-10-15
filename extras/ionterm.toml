@@ -86,6 +86,8 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "ctrl+shift+x" = "next_prompt"
 # "ctrl+shift+g" = "copy_last_command_output"
 # "ctrl+shift+e" = "hints"
+# "ctrl+comma" = "settings"
+# "ctrl+shift+f2" = "settings"
 # "ctrl+shift+equal" = "increase_font_size"
 # "ctrl+shift+minus" = "decrease_font_size"
 # "ctrl+shift+backspace" = "reset_font_size"

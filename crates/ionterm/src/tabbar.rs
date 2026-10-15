@@ -74,6 +74,8 @@ pub enum Hit {
     NewTab,
     /// The `⌄` beside `+`: the connection picker.
     Dropdown,
+    /// The gear at the far end: settings.
+    Settings,
 }
 
 #[derive(Clone, Copy)]
@@ -92,6 +94,8 @@ pub struct BarLayout {
     pub tabs: Vec<TabSlot>,
     pub new_tab: Option<Rect>,
     pub dropdown: Option<Rect>,
+    /// The settings gear, at the far end of the bar.
+    pub settings: Option<Rect>,
 }
 
 /// The rename in progress, drawn in place of a tab's title.
@@ -123,7 +127,8 @@ fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout
     let y = bar.y + top;
     let button = height;
     let dropdown_width = (button * 0.7).round();
-    let available = bar.width - 2.0 * side - button - dropdown_width - gap;
+    let gear = Rect::new(bar.x + bar.width - side - (button - px(4.0)), y + px(2.0), button - px(4.0), button - px(4.0));
+    let available = bar.width - 2.0 * side - button - dropdown_width - gap - gear.width - gap;
     let max_width = m.width * 30.0;
     let min_width = m.width * 8.0;
     let width = (available / count.max(1) as f32 - gap).clamp(min_width, max_width).floor();
@@ -160,6 +165,7 @@ fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout
         tabs,
         new_tab: Some(new_tab),
         dropdown: Some(Rect::new(new_tab.x + new_tab.width, new_tab.y, dropdown_width, new_tab.height)),
+        settings: Some(gear),
     }
 }
 
@@ -188,6 +194,7 @@ fn layout_powerline(bar: Rect, tabs: &[TabInfo], m: CellMetrics, max_title: usiz
         tabs: slots,
         new_tab: None,
         dropdown: None,
+        settings: Some(Rect::new(bar.x + bar.width - 3.0 * m.width, bar.y, 3.0 * m.width, bar.height)),
     }
 }
 
@@ -238,6 +245,9 @@ pub fn hit(layout: &BarLayout, x: f32, y: f32) -> Hit {
     }
     if layout.dropdown.is_some_and(|r| r.contains(x, y)) {
         return Hit::Dropdown;
+    }
+    if layout.settings.is_some_and(|r| r.contains(x, y)) {
+        return Hit::Settings;
     }
     for (i, slot) in layout.tabs.iter().enumerate() {
         if slot.close.is_some_and(|r| r.contains(x, y)) {
@@ -445,7 +455,28 @@ fn draw_tabs(
             bold: false,
         });
     }
+    if let Some(button) = layout.settings {
+        if hover == Hit::Settings {
+            out.push(ChromeItem::RoundedRect {
+                rect: [button.x, button.y, button.width, button.height],
+                radius: (5.0 * scale).round(),
+                top_only: false,
+                color: hover_bg,
+                alpha: 1.0,
+            });
+        }
+        out.push(ChromeItem::Text {
+            text: SETTINGS_ICON.to_string(),
+            x: button.x + ((button.width - m.width) / 2.0).round(),
+            y: button.y + ((button.height - m.height) / 2.0).round(),
+            color: if hover == Hit::Settings { foreground } else { muted },
+            bold: false,
+        });
+    }
 }
+
+/// The gear on the settings button and tab.
+pub const SETTINGS_ICON: char = '\u{F013}';
 
 /// kitty-style Powerline tabs: the separator glyph in the tab's colour over
 /// the next tab's.
@@ -521,6 +552,15 @@ fn draw_powerline(
             x: sep_x,
             y: r.y,
             color: bg,
+            bold: false,
+        });
+    }
+    if let Some(button) = layout.settings {
+        out.push(ChromeItem::Text {
+            text: SETTINGS_ICON.to_string(),
+            x: button.x + m.width,
+            y: button.y,
+            color: colors.inactive_foreground.0,
             bold: false,
         });
     }

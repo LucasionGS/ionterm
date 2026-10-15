@@ -75,6 +75,9 @@ struct RunKey {
     text: String,
     bold: bool,
     italic: bool,
+    /// Another family than the terminal's (font previews); positions are
+    /// then the font's own advances, not cells.
+    family: Option<String>,
 }
 
 pub struct Fonts {
@@ -115,14 +118,17 @@ impl Fonts {
         self.options.ligatures
     }
 
-    /// Changes family or size. The caller must clear the atlas afterwards.
-    pub fn set_options(&mut self, options: FontOptions) {
-        if options != self.options {
-            self.metrics = measure(&mut self.system, &options);
-            self.options = options;
-            self.runs.clear();
-            self.clear_rasters();
+    /// Changes family or size. Returns whether anything changed; then the
+    /// caller must clear the atlas too.
+    pub fn set_options(&mut self, options: FontOptions) -> bool {
+        if options == self.options {
+            return false;
         }
+        self.metrics = measure(&mut self.system, &options);
+        self.options = options;
+        self.runs.clear();
+        self.clear_rasters();
+        true
     }
 
     /// Forgets everything stored in the atlas, after it was cleared.
@@ -137,6 +143,7 @@ impl Fonts {
             text: text.to_string(),
             bold,
             italic,
+            family: None,
         };
         if let Some(run) = self.runs.get(&key) {
             return run.clone();
@@ -171,6 +178,63 @@ impl Fonts {
         let glyphs: Arc<[ShapedGlyph]> = glyphs.into();
         self.runs.insert(key, glyphs.clone());
         glyphs
+    }
+
+    /// Shapes `text` in another font family, laid out by that font's own
+    /// advances (`dx` is from the start of the text). For previews.
+    pub fn shape_in(&mut self, text: &str, family: &str) -> Arc<[ShapedGlyph]> {
+        let key = RunKey {
+            text: text.to_string(),
+            bold: false,
+            italic: false,
+            family: Some(family.to_string()),
+        };
+        if let Some(run) = self.runs.get(&key) {
+            return run.clone();
+        }
+        if self.runs.len() >= MAX_CACHED_RUNS {
+            self.runs.clear();
+        }
+        let attrs = Attrs::new()
+            .cache_key_flags(CacheKeyFlags::DISABLE_HINTING)
+            .family(Family::Name(family));
+        let mut buffer = Buffer::new_empty(Metrics::new(self.options.size, self.metrics.height));
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.system, false);
+        let glyphs: Arc<[ShapedGlyph]> = buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .map(|glyph| {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                ShapedGlyph {
+                    cluster: glyph.start,
+                    key: physical.cache_key,
+                    dx: physical.x,
+                    dy: physical.y,
+                }
+            })
+            .collect();
+        self.runs.insert(key, glyphs.clone());
+        glyphs
+    }
+
+    /// The installed monospace font families, sorted. Nerd Fonts' plain
+    /// variants (double-width icons) don't flag themselves as fixed pitch,
+    /// so "Mono" in the name counts too; emoji fonts that do don't.
+    pub fn monospace_families(&self) -> Vec<String> {
+        let mut families: Vec<String> = self
+            .system
+            .db()
+            .faces()
+            .filter_map(|face| {
+                let name = face.families.first()?.0.clone();
+                let lower = name.to_lowercase();
+                ((face.monospaced || lower.contains("mono")) && !lower.contains("emoji")).then_some(name)
+            })
+            .collect();
+        families.sort_by_key(|name| name.to_lowercase());
+        families.dedup();
+        families
     }
 
     /// The bitmap for a shaped glyph, rasterising it on first use.

@@ -3,6 +3,7 @@
 use ionterm_vt::Rgb;
 
 use crate::files::panel::FilePanel;
+use crate::settings::SettingsPage;
 use crate::layout::{self, Direction, Layout, PaneId, Rect, SplitNode};
 use crate::pane::Pane;
 
@@ -23,6 +24,9 @@ pub struct Tab {
     pub color: Option<Rgb>,
     /// The file panel docked on the right, while open.
     pub files: Option<FilePanel>,
+    /// This is the settings tab: the page shows instead of the pane, which
+    /// only runs the editor when a config file is opened.
+    pub settings: Option<SettingsPage>,
 }
 
 impl Tab {
@@ -37,6 +41,7 @@ impl Tab {
             custom_title: None,
             color: None,
             files: None,
+            settings: None,
         }
     }
 

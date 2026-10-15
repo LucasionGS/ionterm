@@ -235,6 +235,10 @@ impl Pty {
         }
     }
 
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     /// The child's exit code once it has exited.
     pub fn exit_code(&mut self) -> Option<u32> {
         // The reader saw EOF just before the child is reaped; wait briefly.

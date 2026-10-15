@@ -560,6 +560,8 @@ pub enum Action {
     CopyLastOutput,
     /// Labels URLs, paths, hashes and addresses on screen to pick one.
     Hints,
+    /// Opens (or shows) the settings tab.
+    OpenSettings,
     IncreaseFontSize,
     DecreaseFontSize,
     ResetFontSize,
@@ -624,6 +626,7 @@ impl Action {
             "next_prompt" => Self::NextPrompt,
             "copy_last_command_output" | "copy_last_output" | "show_last_command_output" => Self::CopyLastOutput,
             "hints" | "open_url_with_hints" => Self::Hints,
+            "settings" | "open_settings" | "edit_config_file" => Self::OpenSettings,
             "increase_font_size" => Self::IncreaseFontSize,
             "decrease_font_size" => Self::DecreaseFontSize,
             "reset_font_size" => Self::ResetFontSize,
@@ -675,6 +678,8 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+x", "next_prompt"),
     ("ctrl+shift+g", "copy_last_command_output"),
     ("ctrl+shift+e", "hints"),
+    ("ctrl+comma", "settings"),
+    ("ctrl+shift+f2", "settings"),
     ("ctrl+shift+equal", "increase_font_size"),
     ("ctrl+shift+plus", "increase_font_size"),
     ("ctrl+shift+minus", "decrease_font_size"),

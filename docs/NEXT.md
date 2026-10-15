@@ -34,6 +34,7 @@ Done so far, in commit order (`git log --oneline`):
 8. **SSH phase 3, task 3 (rsync, ZMODEM, `ionterm-get`/`ionterm-put`):** `files/rsync.rs`, `zmodem/` (`frame.rs` wire format, `mod.rs` detector and session) wired into `pty.rs`'s reader, `app/rzsz.rs`, and OSC 5379 in `ionterm-vt`. See "SSH phase 3: files" below.
 9. **Shell integration (v0.3b):** OSC 133 marks on rows (`Row::prompt`, `output`, `status`; carried through reflow) and the queries on `Term` (`prompt_lines`, `command_output_at`, `last_command_output`, `failed_commands_in_view`, `click_goes_to_shell`, `progress`, `progress_hint`). `shell.rs` injects `extras/shell-integration/ionterm.{bash,zsh,fish}` into the local login shell (bash `--rcfile`, zsh `ZDOTDIR`, fish 3 `-C`; fish 4 needs nothing), and `ssh/bootstrap.rs` embeds the same files. `app/integration.rs` has the prompt jumps, output copy/select, failed marks and the tab progress bars (`tabbar::draw_progress`).
 10. **Hints mode (v0.3b):** `hints.rs` (finding URLs, paths, `file:line`, hashes and IPs in a line; labels; editor commands, testable without a window) and `app/hints.rs` (the overlay, keys, and open/copy/insert). Local paths are checked against the shell's directory; SSH panes can't be checked, so only clear paths count there and picking one copies it.
+11. **Settings tab:** `settings.rs` (the list of settings and their controls, page state, keys, layout and drawing; testable without a window), `app/settings.rs` (opening the tab, writing with `config::write_setting`, the font picker's families from the renderer, and `$EDITOR` in the tab). A settings tab is a normal `Tab` with `settings: Some(page)`; its one pane runs an idle `sh` loop while the page shows, and `Pane::run` swaps in the editor and back (`settings_child_exited` ignores the old program's late "exited" with `Pane::is_running`). Two renderer fixes came with it: glyphs snap to whole pixels (UI text at half a cell was garbled), and the atlas is only cleared when the font really changed.
 
 ## Code map
 
@@ -62,10 +63,12 @@ crates/ionterm/          the app
   dnd/                   drops: mod.rs (uri-list, shell quoting), wayland.rs (own wl_data_device; winit 0.30 has none)
   dialog.rs              generic modal: buttons, optional input and checkbox
   app/                   files.rs (panel requests, conflicts, toasts, transfer card), drag.rs (drop targets), rzsz.rs (ZMODEM glue),
-                         integration.rs (prompt jumps, output copy/select, failed marks, tab progress), hints.rs (hints overlay)
+                         integration.rs (prompt jumps, output copy/select, failed marks, tab progress), hints.rs (hints overlay),
+                         settings.rs (settings tab, config writes, $EDITOR in the tab)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
   hints.rs               hints mode: finding URLs/paths/file:line/hashes/IPs, labels, editor commands
+  settings.rs            the settings page: settings list, controls, keys, layout and drawing
   config.rs / theme.rs / links.rs
 extras/                  terminfo source, Ionix styler theme files + install functions, example ionterm.toml
 scripts/keytest.sh       real-keystroke test of the keyboard protocol (Hyprland)

@@ -6,6 +6,7 @@ mod files;
 mod hints;
 mod integration;
 mod rzsz;
+mod settings;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -174,6 +175,7 @@ enum BarAction {
     Menu(MenuCommand, usize),
     /// The dialog was answered.
     Dialog(Answer),
+    Settings,
 }
 
 /// Work that needs `&mut App` after a window borrow ends.
@@ -455,6 +457,9 @@ impl App {
     /// A child exited: connections ionterm opened stay open to reconnect if
     /// they ended badly; everything else closes.
     fn child_exited(&mut self, id: PaneId) {
+        if self.settings_child_exited(id) {
+            return;
+        }
         let Some(w) = &mut self.window else { return };
         let Some(pane) = w.tabs.iter_mut().find_map(|t| t.pane_mut(id)) else { return };
         if pane.check_disconnect() {
@@ -558,6 +563,9 @@ impl App {
 
     fn paste(&mut self, primary: bool) {
         let Some(text) = self.get_clipboard(primary) else { return };
+        if self.settings_paste(&text) {
+            return;
+        }
         let Some(w) = &mut self.window else { return };
         let pane = w.active_pane();
         let mode = pane.lock().mode();
@@ -780,6 +788,7 @@ impl App {
             Action::NextPrompt => self.jump_to_prompt(true),
             Action::CopyLastOutput => self.copy_last_output(),
             Action::Hints => self.toggle_hints(),
+            Action::OpenSettings => self.open_settings(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
@@ -998,6 +1007,7 @@ impl App {
         if let Some(action) = self.tab_bar_click(button, pressed) {
             match action {
                 Some(BarAction::NewTab) => self.new_tab(),
+                Some(BarAction::Settings) => self.open_settings(),
                 Some(BarAction::Run(action, split)) => self.run_palette(action, split),
                 Some(BarAction::Form(outcome)) => self.editor_outcome(outcome),
                 Some(BarAction::Palette(anchor)) => {
@@ -1013,6 +1023,16 @@ impl App {
             return FollowUp::None;
         }
         if self.files_click(button, pressed) {
+            return FollowUp::None;
+        }
+        // The settings page takes every click on it.
+        if let Some(w) = &self.window
+            && w.settings_page().is_some()
+        {
+            let (x, y) = (w.pointer.x as f32, w.pointer.y as f32);
+            if pressed && button == MouseButton::Left {
+                self.settings_click(x, y);
+            }
             return FollowUp::None;
         }
         let Some(w) = &mut self.window else { return FollowUp::None };
@@ -1226,6 +1246,7 @@ impl App {
                 None
             }
             (MouseButton::Left, Hit::NewTab) => Some(BarAction::NewTab),
+            (MouseButton::Left, Hit::Settings) => Some(BarAction::Settings),
             (MouseButton::Left, Hit::Dropdown) => {
                 let anchor = layout.as_ref().and_then(|l| l.dropdown).map(|r| (r.x + r.width, r.y + r.height));
                 Some(BarAction::Palette(anchor))
@@ -1327,6 +1348,9 @@ impl App {
             }
             return;
         }
+        if w.settings_hover(x as f32, y as f32) {
+            return;
+        }
         if w.capture.is_none() && w.files_hover(x as f32, y as f32) {
             // Leaving the panes: no pane cell is under the mouse any more.
             w.pointer_cell = None;
@@ -1363,7 +1387,7 @@ impl App {
         let on_link = under
             .and_then(|id| w.tabs[w.active_tab].pane(id))
             .is_some_and(|p| p.hovered.is_some());
-        w.set_cursor_icon(if matches!(hit, Hit::Close(_) | Hit::NewTab) {
+        w.set_cursor_icon(if matches!(hit, Hit::Close(_) | Hit::NewTab | Hit::Dropdown | Hit::Settings) {
             CursorIcon::Pointer
         } else if over_bar {
             CursorIcon::Default
@@ -1422,7 +1446,7 @@ impl App {
             MouseScrollDelta::LineDelta(_, dy) => dy.signum() as isize,
             MouseScrollDelta::PixelDelta(p) => p.y.signum() as isize,
         };
-        if w.files_wheel(x as f32, y as f32, notches) {
+        if w.settings_wheel(notches) || w.files_wheel(x as f32, y as f32, notches) {
             return;
         }
         let m = w.renderer.cell_metrics();
@@ -1609,6 +1633,7 @@ impl TermWindow {
                     Some(_) => extras.and_then(HostExtras::icon_char).unwrap_or(SSH_ICON),
                     None => tabbar::process_icon(pane.process.as_deref()),
                 };
+                let (title, icon) = settings::tab_title(tab).unwrap_or((title, icon));
                 TabInfo {
                     title,
                     icon,
@@ -1780,11 +1805,12 @@ impl TermWindow {
     fn redraw(&mut self, config: &Config, theme: &Theme) {
         let area = self.content_area();
         let panel_focused = self.panel_focused();
+        let settings_shown = self.settings_page().is_some();
         let tab = &self.tabs[self.active_tab];
         let frames: Vec<_> = tab
             .panes
             .iter()
-            .filter(|p| tab.is_visible(p.id))
+            .filter(|p| tab.is_visible(p.id) && !settings_shown)
             .map(|p| {
                 let focused = self.focused && p.id == tab.active && !panel_focused;
                 let (snapshot, frame) = p.frame(focused, self.blink_on);
@@ -1847,6 +1873,7 @@ impl TermWindow {
             // An indeterminate progress bar's stripe keeps moving.
             animating |= infos.iter().any(|t| t.progress.is_some_and(|p| p.fraction.is_none()));
         }
+        self.draw_settings(config, theme, &mut items);
         self.draw_failed_marks(theme, &mut items);
         self.draw_hints(theme, &mut items);
         self.draw_files(theme, &mut items);
@@ -2115,6 +2142,12 @@ impl ApplicationHandler<UserEvent> for App {
                 {
                     let action = *action;
                     return self.perform(action);
+                }
+                if w.settings_page().is_some() {
+                    if event.state == ElementState::Pressed {
+                        self.settings_key(&event);
+                    }
+                    return;
                 }
                 if w.panel_focused() {
                     if event.state == ElementState::Pressed {

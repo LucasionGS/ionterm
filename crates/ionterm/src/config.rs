@@ -2,7 +2,7 @@
 //! runs without a config file at all.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -14,6 +14,66 @@ pub const THEME_FILE: &str = "theme.toml";
 /// `~/.config/ionterm` on Linux, `%APPDATA%\ionterm` on Windows.
 pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("ionterm"))
+}
+
+/// A value the settings page writes into `ionterm.toml`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettingValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+}
+
+/// Sets `section.key` in `ionterm.toml` (or removes it, back to the default,
+/// with `None`), leaving the rest of the file, comments included, as it was.
+/// Creates the file when needed.
+pub fn write_setting(section: &str, key: &str, value: Option<SettingValue>) -> std::io::Result<()> {
+    let dir = config_dir().ok_or_else(|| std::io::Error::other("no config folder"))?;
+    write_setting_in(&dir.join(CONFIG_FILE), section, key, value)
+}
+
+pub fn write_setting_in(path: &Path, section: &str, key: &str, value: Option<SettingValue>) -> std::io::Result<()> {
+    let (text, header) = match std::fs::read_to_string(path) {
+        Ok(text) => (text, ""),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if value.is_none() {
+                return Ok(());
+            }
+            (String::new(), "# ionterm settings. Every option, with its default: extras/ionterm.toml in the ionterm repository.\n\n")
+        }
+        Err(error) => return Err(error),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| std::io::Error::other(e.to_string()))?;
+    match value {
+        Some(value) => {
+            let table = doc
+                .entry(section)
+                .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+                .as_table_like_mut()
+                .ok_or_else(|| std::io::Error::other(format!("[{section}] in {} isn't a table", path.display())))?;
+            let value = match value {
+                SettingValue::Bool(b) => toml_edit::value(b),
+                SettingValue::Int(i) => toml_edit::value(i),
+                // Rounded, so stepping by 0.1 doesn't write 0.30000000000000004.
+                SettingValue::Float(f) => toml_edit::value((f * 1000.0).round() / 1000.0),
+                SettingValue::Text(t) => toml_edit::value(t),
+            };
+            table.insert(key, value);
+        }
+        None => {
+            if let Some(table) = doc.get_mut(section).and_then(|t| t.as_table_like_mut()) {
+                table.remove(key);
+                if table.is_empty() {
+                    doc.remove(section);
+                }
+            }
+        }
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("{header}{doc}"))
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -278,5 +338,28 @@ impl Config {
                 Self::default()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_settings_keeping_the_rest() {
+        let path = std::env::temp_dir().join(format!("ionterm-config-{}.toml", std::process::id()));
+        std::fs::write(&path, "# mine\n[font]\nsize = 11.0 # comfy\nfamily = \"Iosevka\"\n").unwrap();
+        write_setting_in(&path, "font", "size", Some(SettingValue::Float(12.300000001))).unwrap();
+        write_setting_in(&path, "cursor", "shape", Some(SettingValue::Text("block".into()))).unwrap();
+        write_setting_in(&path, "font", "family", None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine\n[font]\nsize = 12.3"), "{text}");
+        assert!(!text.contains("Iosevka") && text.contains("[cursor]\nshape = \"block\""), "{text}");
+        // Removing the last key of a section drops the section.
+        write_setting_in(&path, "cursor", "shape", None).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("[cursor]"));
+        let parsed: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.font.size, 12.3);
+        let _ = std::fs::remove_file(path);
     }
 }

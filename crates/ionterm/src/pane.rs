@@ -242,6 +242,39 @@ impl Pane {
         Ok(())
     }
 
+    /// Replaces the pane's program with another, in the same terminal (the
+    /// settings tab runs the editor this way).
+    pub fn run(
+        &mut self,
+        config: &TerminalConfig,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        metrics: CellMetrics,
+        proxy: EventLoopProxy<UserEvent>,
+    ) -> anyhow::Result<()> {
+        self.lock().scroll_to_bottom();
+        self.pty = Pty::spawn(
+            config,
+            Some(argv),
+            cwd,
+            pty_size(self.grid.0, self.grid.1, metrics),
+            OutputSink {
+                pane: self.id,
+                term: self.term.clone(),
+                proxy,
+                wakeup_pending: self.wakeup_pending.clone(),
+                zmodem: self.zmodem.clone(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Whether the pane's current program still runs (a "child exited"
+    /// event may be about the one it replaced).
+    pub fn is_running(&mut self) -> bool {
+        self.pty.is_running()
+    }
+
     /// The directory a new pane opened from this one should start in.
     pub fn working_dir(&self) -> Option<PathBuf> {
         self.pty.current_dir().or_else(|| self.cwd.clone())

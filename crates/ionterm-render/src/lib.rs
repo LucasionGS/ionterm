@@ -108,6 +108,15 @@ pub enum ChromeItem {
         color: Rgb,
         bold: bool,
     },
+    /// Text in another font family, laid out by its own advances: font
+    /// previews. Missing glyphs fall back like any text.
+    FontText {
+        text: String,
+        x: f32,
+        y: f32,
+        color: Rgb,
+        family: String,
+    },
 }
 
 /// Columns a string occupies in the grid (wide characters count twice).
@@ -406,13 +415,21 @@ impl Renderer {
         self.fonts.metrics()
     }
 
+    /// The installed monospace font families, for a font picker.
+    pub fn monospace_families(&self) -> Vec<String> {
+        self.fonts.monospace_families()
+    }
+
     pub fn font_options(&self) -> &FontOptions {
         self.fonts.options()
     }
 
     pub fn set_font(&mut self, font: FontOptions) {
-        self.fonts.set_options(font);
-        self.atlas.clear();
+        // Only when the font changed: clearing the atlas while the glyph
+        // cache still points into it would draw stale pieces of it.
+        if self.fonts.set_options(font) {
+            self.atlas.clear();
+        }
     }
 
     pub fn set_style(&mut self, style: RenderStyle) {
@@ -595,6 +612,18 @@ impl Renderer {
                 ChromeItem::Text { text, x, y, color, bold } => {
                     if !self.push_text(text, *x, *y, *color, *bold, out) {
                         return false;
+                    }
+                }
+                ChromeItem::FontText { text, x, y, color, family } => {
+                    let m = self.fonts.metrics();
+                    let glyphs = self.fonts.shape_in(text, family);
+                    for glyph in glyphs.iter() {
+                        let piece = match self.fonts.raster(&self.queue, &mut self.atlas, glyph.key) {
+                            Ok(Some(piece)) => piece,
+                            Ok(None) => continue,
+                            Err(AtlasFull) => return false,
+                        };
+                        out.push(glyph_instance(&piece, *x + glyph.dx as f32, *y + m.baseline + glyph.dy as f32, *color));
                     }
                 }
             }
@@ -904,8 +933,11 @@ fn push_placeholders(out: &mut Vec<Instance>, snapshot: &Snapshot, line: &ionter
 
 fn glyph_instance(piece: &GlyphPiece, x: f32, baseline: f32, color: Rgb) -> Instance {
     let r = piece.region;
+    // On whole pixels: the bitmap maps one texel to one pixel, and a
+    // fractional position (UI text at half a cell) would sample between
+    // texels, doubling or dropping columns of the glyph.
     Instance {
-        rect: [x + piece.left, baseline - piece.top, r.width as f32, r.height as f32],
+        rect: [(x + piece.left).round(), (baseline - piece.top).round(), r.width as f32, r.height as f32],
         uv: [r.x as f32, r.y as f32, r.width as f32, r.height as f32],
         color: rgba(color, 1.0),
         kind: if piece.is_color { KIND_COLOR } else { KIND_MASK },

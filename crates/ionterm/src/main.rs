@@ -14,6 +14,7 @@ mod menu;
 mod palette;
 mod pane;
 mod pty;
+mod settings;
 mod shell;
 mod ssh;
 mod tab;
