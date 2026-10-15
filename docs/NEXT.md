@@ -67,6 +67,7 @@ crates/ionterm/          the app
                          settings.rs (settings tab, config writes, $EDITOR in the tab)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
+  scrollback.rs          the scrollback as ANSI text for the pager (ctrl+shift+h), the pager command
   hints.rs               hints mode: finding URLs/paths/file:line/hashes/IPs, labels, editor commands
   settings.rs            the settings page: settings list, controls, keys, layout and drawing
   config.rs / theme.rs / links.rs

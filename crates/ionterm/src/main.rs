@@ -16,6 +16,7 @@ mod notifications;
 mod palette;
 mod pane;
 mod pty;
+mod scrollback;
 mod search;
 mod settings;
 mod shell;

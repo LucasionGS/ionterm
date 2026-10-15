@@ -564,6 +564,8 @@ pub enum Action {
     OpenSettings,
     /// Searches the scrollback.
     Search,
+    /// Opens the scrollback in a pager, in a new tab.
+    ShowScrollback,
     /// Every command, searchable (and SSH hosts to connect to).
     CommandPalette,
     IncreaseFontSize,
@@ -632,6 +634,7 @@ impl Action {
             "hints" | "open_url_with_hints" => Self::Hints,
             "settings" | "open_settings" | "edit_config_file" => Self::OpenSettings,
             "search" | "find" | "search_scrollback" => Self::Search,
+            "show_scrollback" | "scrollback_pager" => Self::ShowScrollback,
             "command_palette" | "commands" | "palette" => Self::CommandPalette,
             "increase_font_size" => Self::IncreaseFontSize,
             "decrease_font_size" => Self::DecreaseFontSize,
@@ -686,6 +689,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+e", "hints"),
     ("ctrl+comma", "settings"),
     ("ctrl+shift+f", "search"),
+    ("ctrl+shift+h", "show_scrollback"),
     ("ctrl+shift+p", "command_palette"),
     ("ctrl+shift+f2", "settings"),
     ("ctrl+shift+equal", "increase_font_size"),

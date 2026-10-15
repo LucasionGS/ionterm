@@ -222,6 +222,9 @@ pub struct TerminalConfig {
     /// Ask before pasting several lines into a program that would run each
     /// one as it arrives (no bracketed paste).
     pub confirm_multiline_paste: bool,
+    /// Shows the scrollback (`show_scrollback`); `INPUT_LINE_NUMBER` becomes
+    /// the line to open at, and the file's path goes last.
+    pub scrollback_pager: String,
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
@@ -240,6 +243,7 @@ impl Default for TerminalConfig {
             advertise_sixel: false,
             shell_integration: true,
             confirm_multiline_paste: true,
+            scrollback_pager: "less -R +INPUT_LINE_NUMBER".into(),
             command: Vec::new(),
             startup_ssh: None,
         }

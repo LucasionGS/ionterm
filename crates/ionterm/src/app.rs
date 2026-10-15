@@ -36,6 +36,7 @@ use crate::files::transfer::{self, TransferEvent, TransferId, Transfers};
 use crate::input::{self, Action, KeyCombo, MouseAction, MouseButton};
 use crate::layout::{self, Direction, PaneId, Rect};
 use crate::links;
+use crate::scrollback;
 use crate::editor::{self, Editor, Outcome};
 use crate::menu::{self, Menu, MenuCommand};
 use crate::palette::{self, Palette, PaletteAction, PaletteItem};
@@ -687,6 +688,27 @@ impl App {
         }
     }
 
+    /// Opens the active pane's scrollback in the pager, in a tab after it.
+    fn show_scrollback(&mut self) {
+        let Some(w) = &mut self.window else { return };
+        let rows = w.new_tab_rows(&self.config);
+        let pane = w.active_pane();
+        let (text, line) = scrollback::export(&pane.lock(), rows);
+        let cwd = pane.working_dir();
+        let path = match scrollback::write_file(&text, pane.id) {
+            Ok(path) => path,
+            Err(error) => {
+                w.show_toast(format!("Couldn't save the scrollback: {error}"));
+                return;
+            }
+        };
+        let argv = scrollback::pager_command(&self.config.terminal.scrollback_pager, &path, line);
+        self.open_command_tab(argv, cwd);
+        if let Some(w) = &mut self.window {
+            w.tabs[w.active_tab].custom_title = Some("Scrollback".into());
+        }
+    }
+
     fn insert_tab(&mut self, index: usize, pane: Pane) {
         let layout = self.default_layout();
         let Some(w) = &mut self.window else { return };
@@ -852,6 +874,7 @@ impl App {
             Action::Hints => self.toggle_hints(),
             Action::OpenSettings => self.open_settings(),
             Action::Search => self.toggle_search(),
+            Action::ShowScrollback => self.show_scrollback(),
             Action::CommandPalette => self.open_command_palette(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
@@ -1761,6 +1784,17 @@ impl TermWindow {
         self.window.request_redraw();
     }
 
+    /// How many rows a new tab's only pane gets (the tab bar shows by then).
+    fn new_tab_rows(&self, config: &Config) -> usize {
+        let m = self.renderer.cell_metrics();
+        let mut height = self.window.inner_size().height as f32;
+        if config.tab_bar.show != ShowTabBar::Never {
+            height -= tabbar::bar_height(config.tab_bar.style, m);
+        }
+        height -= 2.0 * (config.window.padding * self.scale_factor as f32).round();
+        (height / m.height).floor().max(1.0) as usize
+    }
+
     fn window_rect(&self) -> Rect {
         let size = self.window.inner_size();
         Rect::new(0.0, 0.0, size.width as f32, size.height as f32)
@@ -2459,5 +2493,6 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(w) = &mut self.window {
             w.drops = None;
         }
+        scrollback::remove_files();
     }
 }

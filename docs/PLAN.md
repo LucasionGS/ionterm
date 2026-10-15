@@ -199,6 +199,7 @@ Phase 3: files
 - [x] Tab activity and notifications: background tabs show new output (dot), bell, and ✓/✗ for long commands; a desktop notification (`notify-send`) when a command that ran `[notifications] command_done_after` seconds (10) ends while you're elsewhere; OSC 9 and OSC 777 notifications from programs, at most one a second
 - [x] Command palette (ctrl+shift+p): every action with its keybinding, fuzzy-searched, plus SSH hosts to connect to (`commands.rs`, reusing the picker in `palette.rs`)
 - [x] Scrollback search (ctrl+shift+f): plain or regex (alt+r), smart case, across soft wraps, every match highlighted, Enter/shift+Enter or arrows to step, re-searched as output arrives. Moving panes moved to ctrl+shift+alt+f / b
+- [x] Scrollback in a pager (ctrl+shift+h, kitty's `show_scrollback`): the whole history with colours, wrapped lines joined, opened in `less -R` in a tab at the line on screen; `[terminal] scrollback_pager` with `INPUT_LINE_NUMBER`
 - Background image/opacity, cursor trail
 
 ### v0.4: Ionix and Windows

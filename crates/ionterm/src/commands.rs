@@ -33,6 +33,7 @@ const COMMANDS: &[(&str, &str, &str, char)] = &[
     ("next_layout", "Next layout", "Panes", '\u{F0573}'),
     ("toggle_zoom", "Zoom pane", "Panes", '\u{F0349}'),
     ("search", "Search scrollback", "Find", '\u{F0349}'),
+    ("show_scrollback", "Open scrollback in pager", "Find", '\u{F0219}'),
     ("hints", "Pick a URL, path or hash (hints)", "Find", '\u{F0337}'),
     ("previous_prompt", "Jump to previous prompt", "Shell", '\u{F0143}'),
     ("next_prompt", "Jump to next prompt", "Shell", '\u{F0140}'),
