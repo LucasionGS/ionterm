@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use ionterm_render::{FontOptions, FrameState, RenderStyle, Renderer, Selection};
+use ionterm_render::{FontOptions, FrameState, LinkHighlight, RenderStyle, Renderer, Selection};
 use ionterm_vt::{CursorShape, Term, TermEvent, TermMode};
 use portable_pty::PtySize;
 use winit::application::ApplicationHandler;
@@ -15,10 +15,11 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::config::{CONFIG_FILE, Config, FontConfig, CursorShapeConfig, Decorations, THEME_FILE, config_dir};
 use crate::input::{self, Action, KeyCombo, MouseAction, MouseButton};
+use crate::links::{self, Link, LinkKind};
 use crate::pty::Pty;
 use crate::theme::Theme;
 
@@ -27,6 +28,8 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Editors save in several steps; wait for them to settle before reloading.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
 const MULTI_CLICK: Duration = Duration::from_millis(400);
+/// One line per tick while a selection is dragged past the top or bottom.
+const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(40);
 const MIN_FONT_SIZE: f32 = 4.0;
 
 #[derive(Debug)]
@@ -85,6 +88,9 @@ struct TermWindow {
     last_click: Option<(Instant, (usize, usize), u8)>,
     /// Fractional wheel lines carried between touchpad events.
     scroll_remainder: f64,
+    /// The link under the mouse; ctrl+click opens it.
+    hovered: Option<Link>,
+    last_autoscroll: Option<Instant>,
 }
 
 impl App {
@@ -136,6 +142,7 @@ impl App {
             attributes.with_name("ionterm", "ionterm")
         };
         let window = Arc::new(event_loop.create_window(attributes).context("creating the window")?);
+        window.set_cursor(CursorIcon::Text);
 
         let scale_factor = window.scale_factor();
         let font_size = self.config.font.size;
@@ -191,6 +198,8 @@ impl App {
             selection: None,
             last_click: None,
             scroll_remainder: 0.0,
+            hovered: None,
+            last_autoscroll: None,
         })
     }
 
@@ -371,9 +380,20 @@ impl App {
         let pressed = state == ElementState::Pressed;
         let (col, row) = w.cell_under_pointer();
         let mode = w.lock().mode();
-
         // Shift bypasses mouse reporting so text can still be selected.
-        if mode.intersects(TermMode::MOUSE_REPORTING) && !w.modifiers.shift_key() {
+        let grabbed = mode.intersects(TermMode::MOUSE_REPORTING) && !w.modifiers.shift_key();
+
+        if !grabbed
+            && pressed
+            && button == MouseButton::Left
+            && w.modifiers.control_key()
+            && let Some(link) = &w.hovered
+        {
+            links::open(&link.uri);
+            return;
+        }
+
+        if grabbed {
             let action = if pressed { MouseAction::Press } else { MouseAction::Release };
             if let Some(bytes) = input::encode_mouse(action, Some(button), col, row, w.modifiers, mode) {
                 w.pty.write(&bytes);
@@ -426,6 +446,7 @@ impl App {
         if (col, row) == before {
             return;
         }
+        w.update_hover();
         let mode = w.lock().mode();
         if mode.intersects(TermMode::MOUSE_REPORTING) && !w.modifiers.shift_key() {
             let action = MouseAction::Motion(w.held_button);
@@ -484,6 +505,7 @@ impl App {
             w.pty.write(&key.repeat(whole.unsigned_abs()));
         } else {
             w.lock().scroll_display(whole);
+            w.update_hover();
             w.window.request_redraw();
         }
     }
@@ -497,6 +519,55 @@ impl TermWindow {
     fn cell_under_pointer(&self) -> (usize, usize) {
         self.renderer
             .cell_at(self.cursor_pos.x, self.cursor_pos.y, self.grid.0, self.grid.1)
+    }
+
+    /// Finds the link under the mouse and shows it as hovered.
+    fn update_hover(&mut self) {
+        let (col, row) = self.cell_under_pointer();
+        let hovered = {
+            let term = self.lock();
+            links::link_at(&term, term.viewport_to_absolute(row), col)
+        };
+        if hovered != self.hovered {
+            self.window.set_cursor(if hovered.is_some() { CursorIcon::Pointer } else { CursorIcon::Text });
+            self.hovered = hovered;
+            self.window.request_redraw();
+        }
+    }
+
+    /// Scrolls while a selection is dragged past the top or bottom of the
+    /// grid, extending it. Returns when to check again.
+    fn autoscroll(&mut self, now: Instant) -> Option<Instant> {
+        if !self.selecting || self.selection.is_none() {
+            self.last_autoscroll = None;
+            return None;
+        }
+        let (top, bottom) = self.renderer.grid_vertical_bounds(self.grid.1);
+        let y = self.cursor_pos.y as f32;
+        let delta: isize = if y < top {
+            1
+        } else if y >= bottom {
+            -1
+        } else {
+            self.last_autoscroll = None;
+            return None;
+        };
+        let due = self.last_autoscroll.is_none_or(|at| now.duration_since(at) >= AUTOSCROLL_INTERVAL);
+        if due {
+            let (col, _) = self.cell_under_pointer();
+            let edge_row = if delta > 0 { 0 } else { self.grid.1 - 1 };
+            let head = {
+                let mut term = self.lock();
+                term.scroll_display(delta);
+                (term.viewport_to_absolute(edge_row), col)
+            };
+            if let Some(selection) = &mut self.selection {
+                selection.head = head;
+            }
+            self.last_autoscroll = Some(now);
+            self.window.request_redraw();
+        }
+        self.last_autoscroll.map(|at| at + AUTOSCROLL_INTERVAL)
     }
 
     /// Recomputes the grid after a size, scale or font change and tells the
@@ -544,14 +615,19 @@ impl TermWindow {
     }
 
     fn redraw(&mut self) {
-        let (snapshot, selection) = {
+        let (snapshot, selection, hovered_link) = {
             let term = self.lock();
             let top = term.viewport_to_absolute(0) as isize;
-            let selection = self.selection_bounds(&term).map(|(start, end)| Selection {
+            let to_viewport = |start: (usize, usize), end: (usize, usize)| Selection {
                 start: (start.0 as isize - top, start.1),
                 end: (end.0 as isize - top, end.1),
+            };
+            let selection = self.selection_bounds(&term).map(|(start, end)| to_viewport(start, end));
+            let hovered_link = self.hovered.as_ref().map(|link| match link.kind {
+                LinkKind::Hyperlink(id) => LinkHighlight::Hyperlink(id),
+                LinkKind::Text(start, end) => LinkHighlight::Span(to_viewport(start, end)),
             });
-            (term.snapshot(), selection)
+            (term.snapshot(), selection, hovered_link)
         };
         self.renderer.render(
             &snapshot,
@@ -559,6 +635,7 @@ impl TermWindow {
                 focused: self.focused,
                 cursor_blink_on: self.blink_on,
                 selection,
+                hovered_link,
             },
         );
     }
@@ -750,7 +827,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 _ => w.next_blink = None,
             }
-            wake = [wake, w.next_blink, w.sync_deadline].into_iter().flatten().min();
+            let autoscroll = w.autoscroll(now);
+            wake = [wake, w.next_blink, w.sync_deadline, autoscroll].into_iter().flatten().min();
         }
         event_loop.set_control_flow(match wake {
             Some(at) => ControlFlow::WaitUntil(at),

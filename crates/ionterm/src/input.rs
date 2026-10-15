@@ -270,7 +270,8 @@ fn encode_kitty(event: &KeyEvent, mods: ModifiersState, flags: u8) -> Option<Vec
     };
 
     let mut s = String::from("\x1b[");
-    let text_field = (flags & REPORT_TEXT != 0 && all_escapes && pressed)
+    // Only keys that type something carry text; ctrl+a or alt+x don't.
+    let text_field = (flags & REPORT_TEXT != 0 && all_escapes && pressed && bits & !1 == 0)
         .then(|| text.map(|t| t.chars().map(|c| (c as u32).to_string()).collect::<Vec<_>>().join(":")))
         .flatten();
     let needs_mods = bits != 0 || (report_types && event_type != 1) || text_field.is_some();

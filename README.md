@@ -14,6 +14,8 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **Pixel-perfect box drawing**: lines, blocks, rounded corners and Powerline arrows are drawn by ionterm itself, so TUIs look sharp in any font.
 - **Modern protocols**: kitty keyboard protocol, synchronized output, styled and coloured underlines, truecolor, bracketed paste, focus events, OSC 52 clipboard.
 - **Mouse that behaves**: click-drag, double-click word and triple-click line selection, primary selection on middle click, and mouse reporting for TUIs (hold shift to select anyway).
+- **Clickable links**: links that programs print and plain URLs get underlined on hover; ctrl+click opens them.
+- **Reflow**: resize the window and long lines re-wrap instead of getting chopped, which matters when Hyprland keeps retiling.
 - **SSH-friendly**: `TERM` falls back to `xterm-256color` whenever the remote end might not know `xterm-ionterm`, so no more "unknown terminal".
 
 Coming up: tabs and splits, kitty graphics and Sixel images, shell integration, hints mode and scrollback search. See [the plan](docs/PLAN.md).

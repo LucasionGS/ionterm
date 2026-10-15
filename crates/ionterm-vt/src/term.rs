@@ -1,6 +1,6 @@
 //! The terminal state machine: everything a `vte::Perform` callback can change.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use bitflags::bitflags;
@@ -11,11 +11,14 @@ use crate::base64;
 use crate::cell::{Cell, Flags, Row};
 use crate::charset::Charset;
 use crate::color::{Color, Palette, Rgb};
+use crate::reflow::{Reflowed, reflow, wide_padding};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Largest DCS payload we buffer. Sixel images will need their own streaming
 /// path; this only guards the small query sequences.
 const MAX_DCS_LEN: usize = 64 * 1024;
+/// Distinct hyperlinks remembered per terminal; later ones aren't linked.
+const MAX_HYPERLINKS: usize = 65_536;
 /// The kitty keyboard spec caps the flag stack; the oldest entry is evicted.
 const MAX_KEYBOARD_STACK: usize = 16;
 const TAB_WIDTH: usize = 8;
@@ -173,6 +176,13 @@ pub struct Term {
     cursor_style: Option<CursorStyle>,
     /// Kitty keyboard flag stacks for the primary and alternate screens.
     keyboard_stacks: [Vec<u8>; 2],
+    /// Between a prompt mark (OSC 133;A) and the command starting (133;C):
+    /// the shell is showing its prompt and will redraw it after a resize.
+    at_prompt: bool,
+    /// OSC 8 targets; a cell's `hyperlink` is an index into this plus one.
+    hyperlinks: Vec<String>,
+    /// (OSC 8 `id` parameter, URI) → hyperlink id, so repeated links share one.
+    hyperlink_ids: HashMap<(String, String), u32>,
     cell_width: u32,
     cell_height: u32,
     last_printed: Option<char>,
@@ -215,6 +225,9 @@ impl Term {
             palette,
             cursor_style: None,
             keyboard_stacks: [Vec::new(), Vec::new()],
+            at_prompt: false,
+            hyperlinks: Vec::new(),
+            hyperlink_ids: HashMap::new(),
             cell_width: 0,
             cell_height: 0,
             last_printed: None,
@@ -250,6 +263,12 @@ impl Term {
 
     pub fn display_offset(&self) -> usize {
         self.display_offset
+    }
+
+    /// The URI of a cell's OSC 8 hyperlink.
+    pub fn hyperlink(&self, id: u32) -> Option<&str> {
+        let index = (id as usize).checked_sub(1)?;
+        self.hyperlinks.get(index).map(String::as_str)
     }
 
     /// The active kitty keyboard protocol flags (0 = legacy encoding).
@@ -371,57 +390,52 @@ impl Term {
         }
         let alt_active = self.mode.contains(TermMode::ALT_SCREEN);
 
-        // Columns: no reflow yet, lines are cut or padded.
-        for row in self
-            .grid
-            .iter_mut()
-            .chain(self.other_grid.iter_mut())
-            .chain(self.scrollback.iter_mut())
-        {
-            row.resize(cols);
-        }
-
-        // Rows. On the primary screen, lines leaving the top go to the
-        // scrollback, and growing pulls them back, like most terminals do.
-        let (primary, alternate) = if alt_active {
-            (&mut self.other_grid, &mut self.grid)
-        } else {
-            (&mut self.grid, &mut self.other_grid)
-        };
         let mut cursor_shift: isize = 0;
-        if rows < self.rows {
-            let cursor_row = if alt_active { 0 } else { self.cursor.row };
-            let overflow = (cursor_row + 1).saturating_sub(rows);
-            for row in primary.drain(..overflow) {
-                self.scrollback.push_back(row);
-            }
-            primary.truncate(rows);
-            if !alt_active {
-                cursor_shift = -(overflow as isize);
-            }
-            let alt_overflow = if alt_active {
-                (self.cursor.row + 1).saturating_sub(rows)
-            } else {
-                0
-            };
-            alternate.drain(..alt_overflow);
-            alternate.truncate(rows);
-            if alt_active {
-                cursor_shift = -(alt_overflow as isize);
-            }
+        if cols != self.cols {
+            self.reflow_primary(cols, rows);
+            self.resize_alternate(cols, rows);
         } else {
-            let pulled = if alt_active {
-                0
+            // Rows only. On the primary screen, lines leaving the top go to the
+            // scrollback, and growing pulls them back, like most terminals do.
+            let (primary, alternate) = if alt_active {
+                (&mut self.other_grid, &mut self.grid)
             } else {
-                (rows - self.rows).min(self.scrollback.len())
+                (&mut self.grid, &mut self.other_grid)
             };
-            for _ in 0..pulled {
-                let row = self.scrollback.pop_back().expect("checked length");
-                primary.insert(0, row);
+            if rows < self.rows {
+                let cursor_row = if alt_active { 0 } else { self.cursor.row };
+                let overflow = (cursor_row + 1).saturating_sub(rows);
+                for row in primary.drain(..overflow) {
+                    self.scrollback.push_back(row);
+                }
+                primary.truncate(rows);
+                if !alt_active {
+                    cursor_shift = -(overflow as isize);
+                }
+                let alt_overflow = if alt_active {
+                    (self.cursor.row + 1).saturating_sub(rows)
+                } else {
+                    0
+                };
+                alternate.drain(..alt_overflow);
+                alternate.truncate(rows);
+                if alt_active {
+                    cursor_shift = -(alt_overflow as isize);
+                }
+            } else {
+                let pulled = if alt_active {
+                    0
+                } else {
+                    (rows - self.rows).min(self.scrollback.len())
+                };
+                for _ in 0..pulled {
+                    let row = self.scrollback.pop_back().expect("checked length");
+                    primary.insert(0, row);
+                }
+                cursor_shift = pulled as isize;
+                primary.resize(rows, Row::new(cols, Color::Default));
+                alternate.resize(rows, Row::new(cols, Color::Default));
             }
-            cursor_shift = pulled as isize;
-            primary.resize(rows, Row::new(cols, Color::Default));
-            alternate.resize(rows, Row::new(cols, Color::Default));
         }
 
         self.cols = cols;
@@ -439,6 +453,92 @@ impl Term {
         self.trim_scrollback();
         self.display_offset = self.display_offset.min(self.scrollback.len());
         self.dirty = true;
+    }
+
+    /// Re-wraps the primary screen and its scrollback to a new width.
+    ///
+    /// While the shell sits at its prompt, the prompt's rows are blanked
+    /// instead: the shell redraws its prompt after a resize, moving up by the
+    /// number of rows it drew. Reflowing them would change that count and
+    /// leave a stray copy of the prompt above the redrawn one.
+    fn reflow_primary(&mut self, cols: usize, rows: usize) {
+        let alt_active = self.mode.contains(TermMode::ALT_SCREEN);
+        let prompt_start = (self.at_prompt && !alt_active)
+            .then(|| (0..=self.cursor.row).rev().find(|&row| self.grid[row].prompt))
+            .flatten();
+        // While the alternate screen is up, the primary cursor is the one saved on entry.
+        let cursor = if alt_active {
+            self.saved_primary
+                .as_ref()
+                .map_or((self.rows - 1, 0), |saved| (saved.cursor.row, saved.cursor.col))
+        } else {
+            (self.cursor.row, self.cursor.col)
+        };
+        let mut grid = std::mem::take(if alt_active { &mut self.other_grid } else { &mut self.grid });
+        // Rows from the prompt to the cursor, kept out of the reflow.
+        let prompt_rows = prompt_start.map(|start| {
+            grid.truncate(cursor.0 + 1);
+            grid.split_off(start).len()
+        });
+        let history = self.scrollback.len();
+        let all: Vec<Row> = self.scrollback.drain(..).chain(grid).collect();
+        let Reflowed { rows: mut lines, cursor } = match prompt_rows {
+            Some(count) => {
+                let mut out = if all.is_empty() {
+                    Vec::new()
+                } else {
+                    // Content above the prompt; its cursor is irrelevant.
+                    let last = all.len() - 1;
+                    reflow(all, (last, 0), cols).rows
+                };
+                let first = out.len();
+                out.extend((0..count).map(|_| Row::new(cols, Color::Default)));
+                out[first].prompt = true;
+                Reflowed {
+                    rows: out,
+                    cursor: (first + count - 1, cursor.1.min(cols - 1)),
+                }
+            }
+            None => reflow(all, (history + cursor.0, cursor.1), cols),
+        };
+
+        // The screen is the last `rows` lines, moved up if needed to keep the cursor on it.
+        let start = lines.len().saturating_sub(rows).min(cursor.0);
+        let mut screen = lines.split_off(start);
+        screen.truncate(rows);
+        screen.resize(rows, Row::new(cols, Color::Default));
+        self.scrollback = lines.into();
+        let (row, col) = (cursor.0 - start, cursor.1);
+
+        if alt_active {
+            self.other_grid = screen;
+            if let Some(saved) = &mut self.saved_primary {
+                saved.cursor.row = row;
+                saved.cursor.col = col;
+            }
+        } else {
+            self.grid = screen;
+            self.cursor.row = row;
+            self.cursor.col = col;
+        }
+    }
+
+    /// The alternate screen isn't reflowed: full-screen apps redraw on resize.
+    fn resize_alternate(&mut self, cols: usize, rows: usize) {
+        let alt_active = self.mode.contains(TermMode::ALT_SCREEN);
+        let grid = if alt_active { &mut self.grid } else { &mut self.other_grid };
+        for row in grid.iter_mut() {
+            row.resize(cols);
+        }
+        if rows < grid.len() {
+            let overflow = if alt_active { (self.cursor.row + 1).saturating_sub(rows) } else { 0 };
+            grid.drain(..overflow);
+            grid.truncate(rows);
+            if alt_active {
+                self.cursor.row -= overflow;
+            }
+        }
+        grid.resize(rows, Row::new(cols, Color::Default));
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -590,7 +690,7 @@ impl Term {
     fn fix_wide_fragments(&mut self, row: usize, col: usize) {
         let cells = &mut self.grid[row].cells;
         let flags = cells[col].flags;
-        if flags.contains(Flags::WIDE_SPACER) && col > 0 {
+        if flags.contains(Flags::WIDE_SPACER) && col > 0 && cells[col - 1].flags.contains(Flags::WIDE) {
             cells[col - 1] = Cell::blank(cells[col - 1].bg);
         }
         if flags.contains(Flags::WIDE) && col + 1 < cells.len() {
@@ -811,8 +911,13 @@ impl Term {
 
     fn sgr(&mut self, params: &Params) {
         let params: Vec<&[u16]> = params.iter().collect();
+        // SGR 0 resets styling, but a hyperlink only ends with an empty OSC 8.
+        let hyperlink = self.cursor.template.hyperlink;
         if params.is_empty() {
-            self.cursor.template = Cell::default();
+            self.cursor.template = Cell {
+                hyperlink,
+                ..Cell::default()
+            };
             return;
         }
         let t = &mut self.cursor.template;
@@ -820,7 +925,12 @@ impl Term {
         while i < params.len() {
             let p = params[i];
             match p[0] {
-                0 => *t = Cell::default(),
+                0 => {
+                    *t = Cell {
+                        hyperlink,
+                        ..Cell::default()
+                    }
+                }
                 1 => t.flags.insert(Flags::BOLD),
                 2 => t.flags.insert(Flags::DIM),
                 3 => t.flags.insert(Flags::ITALIC),
@@ -998,6 +1108,10 @@ impl Perform for Term {
         }
         if width == 2 && self.cursor.col + 1 >= self.cols {
             if autowrap {
+                // Mark the unused last column so reflow doesn't read it as a space.
+                let last = self.cols - 1;
+                self.fix_wide_fragments(self.cursor.row, last);
+                self.grid[self.cursor.row].cells[last] = wide_padding();
                 self.grid[self.cursor.row].wrapped = true;
                 self.linefeed();
                 self.cursor.col = 0;
@@ -1127,6 +1241,45 @@ impl Perform for Term {
                     self.events.push(TermEvent::Cwd(String::from_utf8_lossy(url).into_owned()));
                 }
             }
+            "8" => {
+                // OSC 8 ; params ; URI. The URI may itself contain `;`.
+                let id_param = params
+                    .get(1)
+                    .map(|p| String::from_utf8_lossy(p))
+                    .and_then(|p| p.split(':').find_map(|kv| kv.strip_prefix("id=").map(str::to_string)))
+                    .unwrap_or_default();
+                let uri = params
+                    .get(2..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                self.cursor.template.hyperlink = if uri.is_empty() {
+                    0
+                } else if let Some(&id) = self.hyperlink_ids.get(&(id_param.clone(), uri.clone())) {
+                    id
+                } else if self.hyperlinks.len() < MAX_HYPERLINKS {
+                    self.hyperlinks.push(uri.clone());
+                    let id = self.hyperlinks.len() as u32;
+                    self.hyperlink_ids.insert((id_param, uri), id);
+                    id
+                } else {
+                    0
+                };
+            }
+            "133" => match params.get(1).map(|p| p.first().copied()) {
+                // Prompt start. `redraw=0` means the shell won't redraw it on resize.
+                Some(Some(b'A')) => {
+                    let redraws = !params[2..].iter().any(|p| *p == b"redraw=0");
+                    self.at_prompt = redraws;
+                    let row = self.cursor.row;
+                    self.grid[row].prompt = true;
+                }
+                // Command started (C) or finished (D).
+                Some(Some(b'C' | b'D')) => self.at_prompt = false,
+                _ => {}
+            },
             "10" | "11" | "12" => {
                 let first = code.parse().expect("matched digits");
                 self.osc_dynamic_colors(first, &params[1..], bell_terminated);
@@ -1157,7 +1310,10 @@ impl Perform for Term {
             "110" => self.palette.foreground = self.base_palette.foreground,
             "111" => self.palette.background = self.base_palette.background,
             "112" => self.palette.cursor = self.base_palette.cursor,
-            _ => tracing::debug!("unhandled OSC {code}"),
+            _ => tracing::debug!(
+                "unhandled OSC {}",
+                params.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(";")
+            ),
         }
     }
 
@@ -1652,6 +1808,51 @@ mod tests {
         assert_eq!(line(&t, 3), "d");
         // Region scrolls never reach the scrollback.
         assert!(t.scrollback.is_empty());
+    }
+
+    #[test]
+    fn hyperlinks_survive_sgr_reset() {
+        let (mut t, mut p) = term(20, 2);
+        p.advance(&mut t, b"\x1b]8;;https://ionnet.io\x1b\\a\x1b[0mb\x1b]8;;\x1b\\c");
+        let cells = &t.grid[0].cells;
+        assert_eq!(t.hyperlink(cells[0].hyperlink), Some("https://ionnet.io"));
+        assert_eq!(cells[1].hyperlink, cells[0].hyperlink);
+        assert_eq!(cells[2].hyperlink, 0);
+    }
+
+    #[test]
+    fn prompt_is_blanked_not_reflowed() {
+        let (mut t, mut p) = term(10, 5);
+        // Output, then a two-line prompt whose first line fills the width.
+        p.advance(&mut t, b"out\r\n\x1b]133;A\x07left  rght\r\n> \x1b]133;B\x07");
+        t.resize(6, 5);
+        assert_eq!(line(&t, 0), "out");
+        assert_eq!((line(&t, 1), line(&t, 2)), (String::new(), String::new()));
+        // The cursor keeps its offset from the prompt start, so the shell's
+        // redraw (up one row, clear, print) lands on the blanked rows.
+        assert_eq!(t.cursor.row, 2);
+        assert!(t.grid[1].prompt);
+        // Once a command runs, resizing reflows normally again.
+        p.advance(&mut t, b"\x1b]133;C\x07");
+        t.resize(10, 5);
+        assert_eq!(line(&t, 0), "out");
+    }
+
+    #[test]
+    fn resize_reflows_long_lines() {
+        let (mut t, mut p) = term(10, 4);
+        p.advance(&mut t, b"$ echo abcdefghijkl\r\nabcdefghijkl\r\n$ ");
+        // 10 columns: "$ echo abc" / "defghijkl" / "abcdefghij" / "kl" / "$ "
+        t.resize(20, 4);
+        assert_eq!(line(&t, 0), "$ echo abcdefghijkl");
+        assert_eq!(line(&t, 1), "abcdefghijkl");
+        assert_eq!(line(&t, 2), "$");
+        assert_eq!((t.cursor.row, t.cursor.col), (2, 2));
+        t.resize(6, 4);
+        // Narrower again: earlier rows move into the scrollback.
+        assert_eq!(line(&t, 3), "$");
+        assert_eq!((t.cursor.row, t.cursor.col), (3, 2));
+        assert_eq!(t.text_between((0, 0), (t.history_len() + 2, 5)), "$ echo abcdefghijkl\nabcdefghijkl");
     }
 
     #[test]

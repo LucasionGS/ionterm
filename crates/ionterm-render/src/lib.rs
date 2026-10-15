@@ -51,6 +51,16 @@ pub struct FrameState {
     /// Blink phase; `false` hides a blinking cursor.
     pub cursor_blink_on: bool,
     pub selection: Option<Selection>,
+    /// The link under the mouse, underlined.
+    pub hovered_link: Option<LinkHighlight>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkHighlight {
+    /// Every cell with this OSC 8 hyperlink id.
+    Hyperlink(u32),
+    /// A span in viewport coordinates, like a selection.
+    Span(Selection),
 }
 
 /// A selected span in viewport coordinates, start before end. Rows may lie
@@ -355,6 +365,12 @@ impl Renderer {
     }
 
     /// The cell under a point in surface pixels, clamped to the grid.
+    /// The pixel bounds of the grid's rows: (top, bottom).
+    pub fn grid_vertical_bounds(&self, rows: usize) -> (f32, f32) {
+        let top = self.style.padding;
+        (top, top + rows as f32 * self.fonts.metrics().height)
+    }
+
     pub fn cell_at(&self, x: f64, y: f64, cols: usize, rows: usize) -> (usize, usize) {
         let m = self.fonts.metrics();
         let col = ((x as f32 - self.style.padding) / m.width).max(0.0) as usize;
@@ -537,6 +553,15 @@ impl Renderer {
                 if !cell.flags.intersects(Flags::WIDE_SPACER | Flags::HIDDEN) {
                     let w = if cell.flags.contains(Flags::WIDE) { m.width * 2.0 } else { m.width };
                     push_decorations(&mut overlay, cell, palette, fg, [x, y, w], &m);
+                }
+                let hovered = match frame.hovered_link {
+                    Some(LinkHighlight::Hyperlink(id)) => cell.hyperlink == id,
+                    Some(LinkHighlight::Span(span)) => span.contains(row as isize, col),
+                    None => false,
+                };
+                if hovered && !cell.flags.intersects(Flags::ALL_UNDERLINES) {
+                    let underline_y = y + m.baseline + m.underline_offset;
+                    overlay.push(solid([x, underline_y, m.width, m.underline_thickness], fg, 1.0));
                 }
             }
 

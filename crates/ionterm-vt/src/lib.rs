@@ -9,6 +9,7 @@ mod base64;
 mod cell;
 mod charset;
 mod color;
+mod reflow;
 mod term;
 
 pub use cell::{Cell, Flags, Row};

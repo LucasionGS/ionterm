@@ -149,10 +149,12 @@ Every key has a default, so ionterm runs with no config at all.
 - [x] OSC 4/10/11/12/104/110–112 colour set and query, OSC 52 clipboard (write only)
 - [x] Device replies: DA1/DA2, DSR/CPR, XTVERSION, XTGETTCAP, DECRQM, DECRQSS
 - [x] xterm-ionterm terminfo source (installed in v0.3 together with the SSH wrapper)
-- [ ] OSC 8 hyperlinks (parse, underline on hover, ctrl+click to open)
-- [ ] Reflow on resize (currently lines are cut or padded)
-- [ ] Interactive testing of the kitty keyboard protocol against nvim / helix / fish
-- [ ] Selection auto-scroll while dragging past the edge
+- [x] Linear-light text blending and unhinted glyphs, matching kitty's rendering
+- [x] OSC 8 hyperlinks and plain-text URL detection: underline on hover, ctrl+click to open (ctrl+shift+click inside mouse-grabbing apps)
+- [x] Reflow on resize (primary screen and scrollback; the alternate screen is left to the app)
+- [x] OSC 133 prompt marks: while the shell is at its prompt, resizing blanks the prompt instead of reflowing it, so shells that redraw (fish, oh-my-posh) don't leave stray copies
+- [x] Kitty keyboard protocol verified with real keystrokes (`scripts/keytest.sh`, Hyprland)
+- [x] Selection auto-scroll while dragging past the edge
 
 ### v0.2: multiplexing and graphics
 - Tabs + GPU tab bar (powerline/slanted/rounded styles), splits, layouts (tall, fat, grid, stack)
@@ -160,7 +162,7 @@ Every key has a default, so ionterm runs with no config at all.
 - Sixel
 
 ### v0.3: power features
-- Shell integration (fish/bash/zsh): OSC 133 prompt marks, jump between prompts, select command output, OSC 7 cwd for new tabs/splits
+- Shell integration (fish/bash/zsh): jump between prompts (OSC 133 marks are already tracked), select command output, OSC 7 cwd for new tabs/splits
 - SSH wrapper with terminfo install and fallback
 - Hints mode (URLs, paths, hashes, `file:line`)
 - Scrollback search (plain + regex, highlighted matches)

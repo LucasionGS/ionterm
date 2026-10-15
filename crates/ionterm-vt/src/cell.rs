@@ -38,6 +38,8 @@ pub struct Cell {
     /// `Color::Default` means "same as the foreground".
     pub underline_color: Color,
     pub flags: Flags,
+    /// OSC 8 hyperlink id (see `Term::hyperlink`); 0 = none.
+    pub hyperlink: u32,
     /// Combining characters that follow `c` in the same grapheme. Boxed so the
     /// common case costs one pointer.
     pub extra: Option<Box<str>>,
@@ -51,6 +53,7 @@ impl Default for Cell {
             bg: Color::Default,
             underline_color: Color::Default,
             flags: Flags::empty(),
+            hyperlink: 0,
             extra: None,
         }
     }
@@ -85,6 +88,8 @@ pub struct Row {
     pub cells: Vec<Cell>,
     /// The line continues on the next row because it soft-wrapped.
     pub wrapped: bool,
+    /// A shell prompt starts on this row (OSC 133;A).
+    pub prompt: bool,
 }
 
 impl Row {
@@ -92,6 +97,7 @@ impl Row {
         Self {
             cells: vec![Cell::blank(bg); cols],
             wrapped: false,
+            prompt: false,
         }
     }
 

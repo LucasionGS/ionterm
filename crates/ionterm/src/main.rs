@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod input;
+mod links;
 mod pty;
 mod theme;
 
