@@ -34,21 +34,46 @@ pub struct MenuLayout {
     pub color_label: Rect,
 }
 
-/// The colours offered: the theme's ANSI hues and its accent.
+/// How many colours the menu offers.
+const SWATCHES: usize = 7;
+
+/// The colours offered: the theme's ANSI hues and its accent, skipping any
+/// that look the same as one already picked (themes often reuse a colour,
+/// like an accent that matches magenta), topped up from the bright hues.
 fn swatch_colors(theme: &Theme) -> Vec<Rgb> {
     let palette = theme.palette();
-    [1, 3, 2, 6, 4, 5]
+    let candidates = [1, 3, 2, 6, 4, 5]
         .iter()
         .map(|&i| palette.colors[i])
         .chain([theme.cursor.0])
-        .collect()
+        .chain([14, 11, 12, 13, 9, 10].iter().map(|&i| palette.colors[i]));
+    let mut colors: Vec<Rgb> = Vec::with_capacity(SWATCHES);
+    for color in candidates {
+        let distinct = colors.iter().all(|c| {
+            let d = |a: u8, b: u8| i32::from(a).abs_diff(i32::from(b));
+            d(c.r, color.r) + d(c.g, color.g) + d(c.b, color.b) > 60
+        });
+        if distinct {
+            colors.push(color);
+        }
+        if colors.len() == SWATCHES {
+            break;
+        }
+    }
+    colors
 }
 
 pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Rect) -> MenuLayout {
     let px = |v: f32| (v * scale).round();
     let row = (m.height * 1.6).round();
     let pad = px(6.0);
-    let width = (m.width * 24.0).max(px(220.0));
+    // The swatch row (colours plus "no colour") decides the width when it is
+    // wider than the labels, so every swatch stays inside the panel.
+    let size = ((m.height * 1.6).round() * 0.75).round();
+    let step = size + px(6.0);
+    let colors = swatch_colors(theme);
+    let swatch_row_width = px(8.0) + (colors.len() + 1) as f32 * step - px(6.0) + px(8.0);
+    let width = (m.width * 24.0).max(px(220.0)).max(swatch_row_width + 2.0 * pad);
     let rows = 6.0; // rename, duplicate, colour label, swatches, close, close others
     let height = rows * row + 2.0 * pad + px(8.0);
     // Keep the menu inside the window.
@@ -67,10 +92,7 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     // Row 2 is the "Colour" label, row 3 the swatches.
     let color_label = item(2.0, 0.0);
 
-    let colors = swatch_colors(theme);
-    let size = (row * 0.75).round();
     let swatch_row = item(3.0, 0.0);
-    let step = size + px(6.0);
     let mut swatches: Vec<(MenuCommand, Rect)> = colors
         .into_iter()
         .enumerate()
@@ -216,6 +238,43 @@ pub fn draw(menu: &Menu, layout: &MenuLayout, theme: &Theme, m: CellMetrics, sca
                     bold: false,
                 });
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swatches_are_distinct_and_inside_the_panel() {
+        let theme = Theme::default();
+        let colors = swatch_colors(&theme);
+        assert_eq!(colors.len(), SWATCHES);
+        for (i, a) in colors.iter().enumerate() {
+            for b in &colors[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+
+        let m = CellMetrics {
+            width: 9.0,
+            height: 20.0,
+            baseline: 15.0,
+            underline_offset: 2.0,
+            underline_thickness: 1.0,
+            strikeout_offset: 5.0,
+        };
+        let menu = Menu {
+            tab: 0,
+            x: 10.0,
+            y: 10.0,
+            hover: None,
+        };
+        let layout = layout(&menu, &theme, m, 1.0, Rect::new(0.0, 0.0, 1000.0, 800.0));
+        for (command, r) in &layout.swatches {
+            assert!(layout.panel.contains(r.x + r.width - 1.0, r.y + 1.0), "{command:?} pokes out");
+            assert_eq!(hit(&layout, r.x + r.width / 2.0, r.y + r.height / 2.0), Some(Some(*command)));
         }
     }
 }
