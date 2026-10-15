@@ -9,11 +9,15 @@ mod base64;
 mod cell;
 mod charset;
 mod color;
+mod diacritics;
+mod graphics;
 mod reflow;
 mod term;
 
 pub use cell::{Cell, Flags, Row};
 pub use color::{Color, Palette, Rgb};
+pub use diacritics::{PLACEHOLDER, diacritic_value};
+pub use graphics::{Image, ImageDraw, Placement};
 pub use term::{
     CursorShape, CursorSnapshot, CursorStyle, Processor, Snapshot, Term, TermEvent, TermMode,
 };

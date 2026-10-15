@@ -11,12 +11,16 @@ use crate::base64;
 use crate::cell::{Cell, Flags, Row};
 use crate::charset::Charset;
 use crate::color::{Color, Palette, Rgb};
+use crate::graphics::{Anchor, Command, Graphics, GraphicsError, Image, ImageDraw, Placement};
 use crate::reflow::{Reflowed, reflow, wide_padding};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Largest DCS payload we buffer. Sixel images will need their own streaming
 /// path; this only guards the small query sequences.
 const MAX_DCS_LEN: usize = 64 * 1024;
+/// Longest APC sequence buffered (a graphics command's chunk). Clients send
+/// at most 4 KiB per chunk; anything far larger is a broken or hostile stream.
+const MAX_APC_LEN: usize = 16 * 1024 * 1024;
 /// Distinct hyperlinks remembered per terminal; later ones aren't linked.
 const MAX_HYPERLINKS: usize = 65_536;
 /// The kitty keyboard spec caps the flag stack; the oldest entry is evicted.
@@ -129,13 +133,32 @@ pub struct Snapshot {
     pub palette: Palette,
     pub display_offset: usize,
     pub scrollback_len: usize,
+    /// Anchored image placements reaching into the viewport.
+    pub images: Vec<ImageDraw>,
+    /// Placements shown through unicode placeholder cells.
+    pub virtual_images: Vec<(Image, Placement)>,
 }
 
 /// Feeds PTY output into a [`Term`], keeping parser state between reads so an
 /// escape sequence split across two reads still parses.
+///
+/// `vte` discards APC strings, which carry kitty graphics, so they are cut
+/// out here before the rest of the stream reaches it.
 #[derive(Default)]
 pub struct Processor {
     parser: vte::Parser,
+    apc: ApcState,
+}
+
+#[derive(Default)]
+enum ApcState {
+    #[default]
+    Ground,
+    /// Saw ESC; the next byte decides whether an APC starts.
+    Escape,
+    Apc(Vec<u8>),
+    /// Saw ESC inside an APC; `\` ends it.
+    ApcEscape(Vec<u8>),
 }
 
 impl Processor {
@@ -144,7 +167,69 @@ impl Processor {
     }
 
     pub fn advance(&mut self, term: &mut Term, bytes: &[u8]) {
-        self.parser.advance(term, bytes);
+        let mut i = 0;
+        // Start of bytes not yet handed to vte.
+        let mut pending = 0;
+        while i < bytes.len() {
+            match std::mem::take(&mut self.apc) {
+                ApcState::Ground => match bytes[i..].iter().position(|&b| b == 0x1b) {
+                    Some(at) => {
+                        self.parser.advance(term, &bytes[pending..i + at]);
+                        i += at + 1;
+                        pending = i;
+                        self.apc = ApcState::Escape;
+                    }
+                    None => {
+                        i = bytes.len();
+                    }
+                },
+                ApcState::Escape => {
+                    if bytes[i] == b'_' {
+                        i += 1;
+                        pending = i;
+                        self.apc = ApcState::Apc(Vec::new());
+                    } else {
+                        // Not an APC: give vte the ESC and carry on normally.
+                        self.parser.advance(term, &[0x1b]);
+                        pending = i;
+                    }
+                }
+                ApcState::Apc(mut buf) => {
+                    let end = bytes[i..].iter().position(|&b| b == 0x1b).map(|at| i + at);
+                    let chunk = &bytes[i..end.unwrap_or(bytes.len())];
+                    if buf.len() + chunk.len() <= MAX_APC_LEN {
+                        buf.extend_from_slice(chunk);
+                    }
+                    match end {
+                        Some(at) => {
+                            i = at + 1;
+                            self.apc = ApcState::ApcEscape(buf);
+                        }
+                        None => {
+                            i = bytes.len();
+                            self.apc = ApcState::Apc(buf);
+                        }
+                    }
+                    pending = i;
+                }
+                ApcState::ApcEscape(buf) => {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                        if buf.len() < MAX_APC_LEN {
+                            term.apc_dispatch(&buf);
+                        }
+                    } else {
+                        // An ESC that doesn't end the string aborts it; the
+                        // byte after it starts a new escape sequence.
+                        self.parser.advance(term, &[0x1b]);
+                    }
+                    pending = i;
+                }
+            }
+        }
+        if matches!(self.apc, ApcState::Ground) && pending < bytes.len() {
+            self.parser.advance(term, &bytes[pending..]);
+        }
     }
 }
 
@@ -179,6 +264,7 @@ pub struct Term {
     /// Between a prompt mark (OSC 133;A) and the command starting (133;C):
     /// the shell is showing its prompt and will redraw it after a resize.
     at_prompt: bool,
+    graphics: Graphics,
     /// OSC 8 targets; a cell's `hyperlink` is an index into this plus one.
     hyperlinks: Vec<String>,
     /// (OSC 8 `id` parameter, URI) → hyperlink id, so repeated links share one.
@@ -226,6 +312,7 @@ impl Term {
             cursor_style: None,
             keyboard_stacks: [Vec::new(), Vec::new()],
             at_prompt: false,
+            graphics: Graphics::default(),
             hyperlinks: Vec::new(),
             hyperlink_ids: HashMap::new(),
             cell_width: 0,
@@ -559,6 +646,7 @@ impl Term {
             }
         });
 
+        let (images, virtual_images) = self.visible_images(offset);
         Snapshot {
             cols: self.cols,
             rows: self.rows,
@@ -567,6 +655,8 @@ impl Term {
             palette: self.palette.clone(),
             display_offset: offset,
             scrollback_len: self.scrollback.len(),
+            images,
+            virtual_images,
         }
     }
 
@@ -596,8 +686,19 @@ impl Term {
 
     fn trim_scrollback(&mut self) {
         while self.scrollback.len() > self.scrollback_limit {
-            self.scrollback.pop_front();
+            if let Some(row) = self.scrollback.pop_front() {
+                self.forget_anchors(&row);
+            }
         }
+    }
+
+    /// Removes the placements anchored on a row that is going away.
+    fn forget_anchors(&mut self, row: &Row) {
+        if row.anchors.is_empty() {
+            return;
+        }
+        let keys: Vec<u64> = row.anchors.iter().map(|a| a.placement).collect();
+        self.graphics.remove_placements(false, |key, _| keys.contains(&key));
     }
 
     /// Scrolls lines `top..=bottom` up by `n`. With `save`, lines leaving the
@@ -713,7 +814,9 @@ impl Term {
 
     fn erase_rows(&mut self, rows: std::ops::Range<usize>) {
         for row in rows {
-            self.grid[row] = self.blank_row();
+            let blank = self.blank_row();
+            let old = std::mem::replace(&mut self.grid[row], blank);
+            self.forget_anchors(&old);
         }
         self.dirty = true;
     }
@@ -1071,6 +1174,203 @@ impl Term {
 
     //#endregion
 }
+
+//#region Graphics
+
+impl Term {
+    /// An APC string from the [`Processor`]; kitty graphics start with `G`.
+    fn apc_dispatch(&mut self, data: &[u8]) {
+        let Some(rest) = data.strip_prefix(b"G") else { return };
+        let (control, payload) = match rest.iter().position(|&b| b == b';') {
+            Some(at) => (&rest[..at], &rest[at + 1..]),
+            None => (rest, &[][..]),
+        };
+        let cmd = Command::parse(control);
+        if let Some(finished) = self.graphics.continue_loading(&cmd, payload) {
+            if let Some((first, data)) = finished {
+                self.graphics_execute(first, data);
+            }
+            return;
+        }
+        if cmd.more && matches!(cmd.action, b't' | b'T' | b'q') {
+            self.graphics.start_loading(cmd, payload);
+            return;
+        }
+        let data = base64::decode(payload).unwrap_or_default();
+        self.graphics_execute(cmd, data);
+    }
+
+    fn graphics_execute(&mut self, cmd: Command, data: Vec<u8>) {
+        let result = match cmd.action {
+            // Queries check that a transmission would work, without storing it.
+            b'q' => Graphics::default().transmit(&cmd, data).map(|_| cmd.id),
+            b't' => self.graphics.transmit(&cmd, data),
+            b'T' => self.graphics.transmit(&cmd, data).inspect(|&id| self.place_image(id, &cmd)),
+            b'p' => match self.graphics.resolve(&cmd) {
+                Some(id) => {
+                    self.place_image(id, &cmd);
+                    Ok(id)
+                }
+                None => Err(GraphicsError {
+                    code: "ENOENT",
+                    message: "no such image".into(),
+                }),
+            },
+            b'd' => {
+                self.delete_images(&cmd);
+                return;
+            }
+            other => Err(GraphicsError {
+                code: "EINVAL",
+                message: format!("unsupported action {:?}", other as char),
+            }),
+        };
+        // Replies go only to clients that named the image, and not when quiet.
+        if cmd.id == 0 && cmd.number == 0 {
+            return;
+        }
+        let (id, message) = match &result {
+            Ok(id) if cmd.quiet == 0 => (*id, "OK".to_string()),
+            Err(error) if cmd.quiet < 2 => (cmd.id, format!("{}:{}", error.code, error.message)),
+            _ => return,
+        };
+        let mut keys = format!("i={id}");
+        if cmd.number != 0 {
+            keys.push_str(&format!(",I={}", cmd.number));
+        }
+        if cmd.placement != 0 {
+            keys.push_str(&format!(",p={}", cmd.placement));
+        }
+        self.reply(&format!("\x1b_G{keys};{message}\x1b\\"));
+    }
+
+    fn place_image(&mut self, image_id: u32, cmd: &Command) {
+        let key = self.graphics.place(image_id, cmd, (self.cell_width, self.cell_height));
+        self.dirty = true;
+        if cmd.unicode {
+            return;
+        }
+        let (row, col) = (self.cursor.row, self.cursor.col);
+        self.grid[row].anchors.push(Anchor { placement: key, col });
+        if cmd.cursor_movement == 1 {
+            return;
+        }
+        // The cursor ends up just right of the image, on its last row.
+        let Some(p) = self.graphics.placement(key) else { return };
+        let (rows, cols) = (p.rows as usize, p.cols as usize);
+        for _ in 1..rows {
+            self.linefeed();
+        }
+        let next = col + cols;
+        if next >= self.cols {
+            self.cursor.col = self.cols - 1;
+            self.cursor.wrap_pending = self.mode.contains(TermMode::AUTOWRAP);
+        } else {
+            self.cursor.col = next;
+            self.cursor.wrap_pending = false;
+        }
+    }
+
+    /// Anchored placements on the current screen: (key, row, col, placement).
+    fn screen_placements(&self) -> Vec<(u64, usize, usize, Placement)> {
+        let mut out = Vec::new();
+        for (row, line) in self.grid.iter().enumerate() {
+            for anchor in &line.anchors {
+                if let Some(p) = self.graphics.placement(anchor.placement) {
+                    out.push((anchor.placement, row, anchor.col, p.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    fn delete_images(&mut self, cmd: &Command) {
+        let free = cmd.delete.is_ascii_uppercase();
+        let covers = |row: usize, col: usize, p: &Placement, x: Option<usize>, y: Option<usize>| {
+            x.is_none_or(|x| x >= col && x < col + p.cols as usize) && y.is_none_or(|y| y >= row && y < row + p.rows as usize)
+        };
+        let on_screen = |filter: &dyn Fn(usize, usize, &Placement) -> bool| -> Vec<u64> {
+            self.screen_placements()
+                .into_iter()
+                .filter(|(_, row, col, p)| filter(*row, *col, p))
+                .map(|(key, ..)| key)
+                .collect()
+        };
+        let (cx, cy) = (cmd.x.saturating_sub(1) as usize, cmd.y.saturating_sub(1) as usize);
+        let keys: Vec<u64> = match cmd.delete.to_ascii_lowercase() {
+            b'a' => on_screen(&|_, _, _| true),
+            b'c' => {
+                let (cursor_x, cursor_y) = (self.cursor.col, self.cursor.row);
+                on_screen(&|row, col, p| covers(row, col, p, Some(cursor_x), Some(cursor_y)))
+            }
+            b'p' => on_screen(&|row, col, p| covers(row, col, p, Some(cx), Some(cy))),
+            b'q' => on_screen(&|row, col, p| covers(row, col, p, Some(cx), Some(cy)) && p.z == cmd.z),
+            b'x' => on_screen(&|row, col, p| covers(row, col, p, Some(cx), None)),
+            b'y' => on_screen(&|row, col, p| covers(row, col, p, None, Some(cy))),
+            b'z' => on_screen(&|_, _, p| p.z == cmd.z),
+            b'i' | b'n' => {
+                let id = if cmd.delete.eq_ignore_ascii_case(&b'n') {
+                    let Some(id) = self.graphics.resolve(&Command { id: 0, ..cmd.clone() }) else { return };
+                    id
+                } else {
+                    cmd.id
+                };
+                let placement = cmd.placement;
+                self.graphics.remove_placements(free, |_, p| {
+                    p.image_id == id && (placement == 0 || p.placement_id == placement)
+                });
+                if free && placement == 0 {
+                    self.graphics.remove_image(id);
+                }
+                self.dirty = true;
+                return;
+            }
+            b'r' => {
+                let range = cmd.x..=cmd.y;
+                self.graphics.remove_placements(free, |_, p| range.contains(&p.image_id));
+                self.dirty = true;
+                return;
+            }
+            _ => return,
+        };
+        self.graphics.remove_placements(free, |key, _| keys.contains(&key));
+        self.dirty = true;
+    }
+
+    /// Placements reaching into the viewport, and virtual placements.
+    fn visible_images(&self, offset: usize) -> (Vec<ImageDraw>, Vec<(Image, Placement)>) {
+        if self.graphics.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let top = self.scrollback.len() - offset;
+        let mut images = Vec::new();
+        for line in top.saturating_sub(self.graphics.max_rows)..top + self.rows {
+            let Some(row) = self.line(line) else { break };
+            for anchor in &row.anchors {
+                let Some(p) = self.graphics.placement(anchor.placement) else { continue };
+                let Some(image) = self.graphics.image(p.image_id) else { continue };
+                let viewport_row = line as isize - top as isize;
+                if viewport_row + p.rows as isize > 0 {
+                    images.push(ImageDraw {
+                        image: image.clone(),
+                        placement: p.clone(),
+                        row: viewport_row,
+                        col: anchor.col,
+                    });
+                }
+            }
+        }
+        images.sort_by_key(|draw| draw.placement.z);
+        let virtual_images = self
+            .graphics
+            .virtual_placements()
+            .filter_map(|p| Some((self.graphics.image(p.image_id)?.clone(), p.clone())))
+            .collect();
+        (images, virtual_images)
+    }
+}
+
+//#endregion
 
 impl Perform for Term {
     fn print(&mut self, c: char) {
@@ -1836,6 +2136,29 @@ mod tests {
         p.advance(&mut t, b"\x1b]133;C\x07");
         t.resize(10, 5);
         assert_eq!(line(&t, 0), "out");
+    }
+
+    #[test]
+    fn kitty_graphics_round_trip() {
+        let (mut t, mut p) = term(20, 5);
+        t.set_cell_size(10, 20);
+        // A 2x1 RGB image, transmitted and displayed, split over two chunks
+        // and two reads (the second read starts mid-escape).
+        p.advance(&mut t, b"\x1b_Ga=T,f=24,s=2,v=1,i=5,m=1;AAAA\x1b\\\x1b");
+        p.advance(&mut t, b"_Gm=0;AAAA\x1b\\after");
+        assert_eq!(t.take_output(), b"\x1b_Gi=5;OK\x1b\\");
+        let snap = t.snapshot();
+        assert_eq!(snap.images.len(), 1);
+        assert_eq!(snap.images[0].image.width, 2);
+        // The cursor moved past the image (one cell wide), and normal text still parses.
+        assert_eq!(line(&t, 0), " after");
+
+        // Queries answer without storing anything.
+        p.advance(&mut t, b"\x1b_Ga=q,i=31,s=1,v=1,f=24;AAAA\x1b\\");
+        assert_eq!(t.take_output(), b"\x1b_Gi=31;OK\x1b\\");
+        // Deleting by id removes the placement.
+        p.advance(&mut t, b"\x1b_Ga=d,d=I,i=5\x1b\\");
+        assert!(t.snapshot().images.is_empty());
     }
 
     #[test]

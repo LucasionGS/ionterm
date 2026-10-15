@@ -11,12 +11,17 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
+// The image drawn by KIND_IMAGE instances; switched between draw calls.
+@group(1) @binding(0) var image_texture: texture_2d<f32>;
+@group(1) @binding(1) var image_sampler: sampler;
 
 const KIND_SOLID: u32 = 0u;
 const KIND_MASK: u32 = 1u;
 const KIND_COLOR: u32 = 2u;
 // A rounded rectangle: uv.x = corner radius, uv.y = 1 to round only the top corners.
 const KIND_ROUNDED: u32 = 3u;
+// A terminal image: uv is already normalised to the image texture.
+const KIND_IMAGE: u32 = 4u;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
@@ -54,7 +59,8 @@ fn vs_main(@builtin(vertex_index) index: u32, inst: Instance) -> VertexOut {
         0.0,
         1.0,
     );
-    out.uv = (inst.uv.xy + corner * inst.uv.zw) / u.atlas_size;
+    let uv = inst.uv.xy + corner * inst.uv.zw;
+    out.uv = select(uv / u.atlas_size, uv, inst.kind == KIND_IMAGE);
     out.color = vec4<f32>(srgb_to_linear(inst.color.rgb), inst.color.a);
     out.kind = inst.kind;
     out.local = corner * inst.rect.zw;
@@ -81,7 +87,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let coverage = clamp(0.5 - distance, 0.0, 1.0) * in.color.a;
         return vec4<f32>(in.color.rgb * coverage, coverage);
     }
-    let texel = textureSample(atlas, atlas_sampler, in.uv);
+    if in.kind == KIND_IMAGE {
+        let pixel = textureSampleLevel(image_texture, image_sampler, in.uv, 0.0);
+        let alpha = pixel.a * in.color.a;
+        return vec4<f32>(srgb_to_linear(pixel.rgb) * alpha, alpha);
+    }
+    let texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
     if in.kind == KIND_MASK {
         let alpha = texel.a * in.color.a;
         return vec4<f32>(in.color.rgb * alpha, alpha);

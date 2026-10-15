@@ -8,22 +8,25 @@
 mod atlas;
 mod boxdraw;
 mod font;
+mod images;
 
 use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use bytemuck::{Pod, Zeroable};
-use ionterm_vt::{Cell, CursorShape, Flags, Palette, Rgb, Snapshot};
+use ionterm_vt::{Cell, Color, CursorShape, Flags, Image, PLACEHOLDER, Palette, Rgb, Snapshot, diacritic_value};
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 
 use atlas::{ATLAS_SIZE, Atlas};
 pub use font::{CellMetrics, FontOptions};
 use font::{AtlasFull, Fonts, GlyphPiece};
+use images::ImageCache;
 
 const KIND_SOLID: u32 = 0;
 const KIND_MASK: u32 = 1;
 const KIND_COLOR: u32 = 2;
 const KIND_ROUNDED: u32 = 3;
+const KIND_IMAGE: u32 = 4;
 /// The off-screen frame text is blended into: linear light, with headroom.
 const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Width of the beam cursor and the outline of the unfocused cursor, in pixels.
@@ -134,7 +137,8 @@ struct Instance {
     uv: [f32; 4],
     color: [f32; 4],
     kind: u32,
-    _pad: [u32; 3],
+    /// For images: the texture's id and version (see `images::key`).
+    extra: [u32; 3],
 }
 
 #[repr(C)]
@@ -166,6 +170,7 @@ pub struct Renderer {
     style: RenderStyle,
     supports_transparency: bool,
     scratch: Vec<Instance>,
+    images: ImageCache,
 }
 
 impl Renderer {
@@ -262,9 +267,10 @@ impl Renderer {
                 },
             ],
         });
+        let image_cache = ImageCache::new(&device, &queue);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ionterm pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&bind_group_layout), Some(image_cache.layout())],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -392,6 +398,7 @@ impl Renderer {
             style,
             supports_transparency,
             scratch: Vec::new(),
+            images: image_cache,
         })
     }
 
@@ -438,6 +445,14 @@ impl Renderer {
                 return;
             }
         };
+
+        for pane in panes {
+            let snapshot = pane.snapshot;
+            let images = snapshot.images.iter().map(|d| &d.image);
+            for image in images.chain(snapshot.virtual_images.iter().map(|(image, _)| image)) {
+                self.images.prepare(&self.device, &self.queue, image);
+            }
+        }
 
         let mut instances = std::mem::take(&mut self.scratch);
         instances.clear();
@@ -504,7 +519,21 @@ impl Renderer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_vertex_buffer(0, self.instances.slice(..));
-                pass.draw(0..4, 0..instances.len() as u32);
+                // One draw per run of instances sharing an image texture
+                // (or none): everything else is a single draw.
+                let image_of = |i: &Instance| (i.kind == KIND_IMAGE).then_some((i.extra[0], i.extra[1]));
+                let mut start = 0;
+                while start < instances.len() {
+                    let key = image_of(&instances[start]);
+                    let end = instances[start..]
+                        .iter()
+                        .position(|i| image_of(i) != key)
+                        .map_or(instances.len(), |n| start + n);
+                    let textures = key.and_then(|k| self.images.bind_group(k)).unwrap_or(&self.images.empty);
+                    pass.set_bind_group(1, textures, &[]);
+                    pass.draw(0..4, start as u32..end as u32);
+                    start = end;
+                }
             }
         }
         {
@@ -530,6 +559,7 @@ impl Renderer {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(texture);
+        self.images.end_frame();
         self.scratch = instances;
     }
 
@@ -560,7 +590,7 @@ impl Renderer {
                     uv: [*radius, if *top_only { 1.0 } else { 0.0 }, 0.0, 0.0],
                     color: rgba(*color, *alpha),
                     kind: KIND_ROUNDED,
-                    _pad: [0; 3],
+                    extra: [0; 3],
                 }),
                 ChromeItem::Text { text, x, y, color, bold } => {
                     if !self.push_text(text, *x, *y, *color, *bold, out) {
@@ -664,12 +694,17 @@ impl Renderer {
                 }
             }
 
+            // Unicode placeholder cells show slices of virtual image placements.
+            if !snapshot.virtual_images.is_empty() {
+                push_placeholders(&mut overlay, snapshot, line, [ox, y], &m);
+            }
+
             // Text, in runs of same-style cells so ligatures can form.
             let cells = &line.cells;
             let mut col = 0;
             while col < cells.len() {
                 let cell = &cells[col];
-                if cell.flags.intersects(Flags::WIDE_SPACER | Flags::HIDDEN) || cell.is_empty() {
+                if cell.flags.intersects(Flags::WIDE_SPACER | Flags::HIDDEN) || cell.is_empty() || cell.c == PLACEHOLDER {
                     col += 1;
                     continue;
                 }
@@ -697,6 +732,7 @@ impl Renderer {
                         continue;
                     }
                     let joins = c.flags & (Flags::BOLD | Flags::ITALIC) == style
+                        && c.c != PLACEHOLDER
                         && !c.flags.contains(Flags::HIDDEN)
                         && !c.is_empty()
                         && !(boxdraw::is_procedural(c.c) && c.extra.is_none());
@@ -727,7 +763,15 @@ impl Renderer {
                 col = end;
             }
         }
+        // Images below the text (negative z), the text, then images above it.
+        let clip = [ox, oy, snapshot.cols as f32 * m.width, snapshot.rows as f32 * m.height];
+        for draw in snapshot.images.iter().filter(|d| d.placement.z < 0) {
+            push_placement(out, draw, [ox, oy], clip, &m);
+        }
         out.append(&mut overlay);
+        for draw in snapshot.images.iter().filter(|d| d.placement.z >= 0) {
+            push_placement(out, draw, [ox, oy], clip, &m);
+        }
 
         // Cursor shapes that sit on top of the text.
         if let Some(c) = cursor {
@@ -755,6 +799,109 @@ impl Renderer {
     }
 }
 
+/// An anchored image placement, clipped to the pane's grid.
+fn push_placement(out: &mut Vec<Instance>, draw: &ionterm_vt::ImageDraw, origin: [f32; 2], clip: [f32; 4], m: &CellMetrics) {
+    let p = &draw.placement;
+    let source = p.source.map(|v| v as f32);
+    let x = origin[0] + draw.col as f32 * m.width + p.x_offset as f32;
+    let y = origin[1] + draw.row as f32 * m.height + p.y_offset as f32;
+    let (w, h) = if p.scaled {
+        (p.cols as f32 * m.width, p.rows as f32 * m.height)
+    } else {
+        (source[2], source[3])
+    };
+    push_image(out, &draw.image, source, [x, y, w, h], clip);
+}
+
+/// Draws the part of `source` (image pixels) that lands inside `clip`, when
+/// stretched over `dest`.
+fn push_image(out: &mut Vec<Instance>, image: &Image, source: [f32; 4], dest: [f32; 4], clip: [f32; 4]) {
+    let [dx, dy, dw, dh] = dest;
+    if dw <= 0.0 || dh <= 0.0 {
+        return;
+    }
+    let x0 = dx.max(clip[0]);
+    let y0 = dy.max(clip[1]);
+    let x1 = (dx + dw).min(clip[0] + clip[2]);
+    let y1 = (dy + dh).min(clip[1] + clip[3]);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    // Map the visible part back into the source rectangle.
+    let sx = source[0] + (x0 - dx) / dw * source[2];
+    let sy = source[1] + (y0 - dy) / dh * source[3];
+    let sw = (x1 - x0) / dw * source[2];
+    let sh = (y1 - y0) / dh * source[3];
+    let (iw, ih) = (image.width as f32, image.height as f32);
+    let key = images::key(image);
+    out.push(Instance {
+        rect: [x0, y0, x1 - x0, y1 - y0],
+        uv: [sx / iw, sy / ih, sw / iw, sh / ih],
+        color: [1.0; 4],
+        kind: KIND_IMAGE,
+        extra: [key.0, key.1, 0],
+    });
+}
+
+/// Draws the image slices for unicode placeholder cells (U+10EEEE). The cell's
+/// foreground colour holds the image id, its underline colour the placement
+/// id, and combining marks the row and column within the image.
+/// `origin` is the top-left corner of the row.
+fn push_placeholders(out: &mut Vec<Instance>, snapshot: &Snapshot, line: &ionterm_vt::Row, origin: [f32; 2], m: &CellMetrics) {
+    let color_number = |color: Color| match color {
+        Color::Rgb(c) => (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b),
+        Color::Indexed(n) => u32::from(n),
+        Color::Default => 0,
+    };
+    // (image id, row, column) of the previous placeholder, which a cell
+    // without marks continues from.
+    let mut previous: Option<(u32, u32, u32)> = None;
+    for (col, cell) in line.cells.iter().enumerate() {
+        if cell.c != PLACEHOLDER {
+            previous = None;
+            continue;
+        }
+        let low_id = color_number(cell.fg);
+        let mut marks = cell.extra.as_deref().unwrap_or_default().chars().filter_map(diacritic_value);
+        let (image_row, image_col, high_id) = match (marks.next(), marks.next(), marks.next()) {
+            (Some(r), Some(c), high) => (r, c, high.unwrap_or(0)),
+            (Some(r), None, _) => match previous {
+                Some((id, pr, pc)) if pr == r && id & 0xFF_FFFF == low_id => (r, pc + 1, id >> 24),
+                _ => (r, 0, 0),
+            },
+            (None, ..) => match previous {
+                Some((id, pr, pc)) if id & 0xFF_FFFF == low_id => (pr, pc + 1, id >> 24),
+                _ => continue,
+            },
+        };
+        let image_id = low_id | (high_id << 24);
+        previous = Some((image_id, image_row, image_col));
+
+        let placement_id = color_number(cell.underline_color);
+        let Some((image, placement)) = snapshot
+            .virtual_images
+            .iter()
+            .find(|(image, p)| image.id == image_id && (placement_id == 0 || p.placement_id == placement_id))
+        else {
+            continue;
+        };
+        // The image is fitted into the placement's box keeping its aspect
+        // ratio, centred; each cell shows its share of that box.
+        let [sx, sy, sw, sh] = placement.source.map(|v| v as f32);
+        let box_w = placement.cols as f32 * m.width;
+        let box_h = placement.rows as f32 * m.height;
+        let scale = (box_w / sw.max(1.0)).min(box_h / sh.max(1.0));
+        let (fit_w, fit_h) = (sw * scale, sh * scale);
+        let fit_x = (box_w - fit_w) / 2.0;
+        let fit_y = (box_h - fit_h) / 2.0;
+        // Where the box's top-left corner would be on screen.
+        let box_x = origin[0] + (col as f32 - image_col as f32) * m.width;
+        let box_y = origin[1] - image_row as f32 * m.height;
+        let cell_rect = [origin[0] + col as f32 * m.width, origin[1], m.width, m.height];
+        push_image(out, image, [sx, sy, sw, sh], [box_x + fit_x, box_y + fit_y, fit_w, fit_h], cell_rect);
+    }
+}
+
 fn glyph_instance(piece: &GlyphPiece, x: f32, baseline: f32, color: Rgb) -> Instance {
     let r = piece.region;
     Instance {
@@ -762,7 +909,7 @@ fn glyph_instance(piece: &GlyphPiece, x: f32, baseline: f32, color: Rgb) -> Inst
         uv: [r.x as f32, r.y as f32, r.width as f32, r.height as f32],
         color: rgba(color, 1.0),
         kind: if piece.is_color { KIND_COLOR } else { KIND_MASK },
-        _pad: [0; 3],
+        extra: [0; 3],
     }
 }
 
@@ -832,7 +979,7 @@ fn solid(rect: [f32; 4], color: Rgb, alpha: f32) -> Instance {
         uv: [0.0; 4],
         color: rgba(color, alpha),
         kind: KIND_SOLID,
-        _pad: [0; 3],
+        extra: [0; 3],
     }
 }
 

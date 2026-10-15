@@ -73,6 +73,10 @@ impl Pty {
             .spawn(move || {
                 let mut processor = Processor::new();
                 let mut buf = vec![0u8; 64 * 1024];
+                // Debugging aid: IONTERM_DUMP=<file> records the raw output.
+                let mut dump = std::env::var_os("IONTERM_DUMP").and_then(|path| {
+                    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+                });
                 loop {
                     let n = match reader.read(&mut buf) {
                         Ok(0) => break,
@@ -83,6 +87,9 @@ impl Pty {
                             break;
                         }
                     };
+                    if let Some(file) = &mut dump {
+                        let _ = file.write_all(&buf[..n]);
+                    }
                     let replies = {
                         let mut term = term.lock().expect("terminal lock poisoned");
                         processor.advance(&mut term, &buf[..n]);

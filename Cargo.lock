@@ -903,6 +903,8 @@ name = "ionterm-vt"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "miniz_oxide 0.9.1",
+ "png",
  "tracing",
  "unicode-width",
  "vte",

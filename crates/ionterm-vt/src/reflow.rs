@@ -6,6 +6,17 @@
 
 use crate::cell::{Cell, Flags, Row};
 use crate::color::Color;
+use crate::graphics::Anchor;
+
+/// A line as it was before wrapping: its cells and what was attached to them.
+struct LogicalLine {
+    cells: Vec<Cell>,
+    /// The cursor's offset into `cells`, if it's on this line.
+    cursor: Option<usize>,
+    prompt: bool,
+    /// Image anchors by their offset into `cells`.
+    anchors: Vec<(usize, Anchor)>,
+}
 
 pub struct Reflowed {
     pub rows: Vec<Row>,
@@ -20,9 +31,11 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
 
     // Join soft-wrapped rows into logical lines, remembering where the cursor
     // is and which lines start a prompt.
-    let mut lines: Vec<(Vec<Cell>, Option<usize>, bool)> = Vec::new();
+    let mut lines: Vec<LogicalLine> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
     let mut prompt = false;
+    // Image anchors by their offset into the logical line.
+    let mut anchors: Vec<(usize, Anchor)> = Vec::new();
     let mut cursor_offset = None;
     let mut cursor_line = 0;
     for (index, row) in rows.into_iter().enumerate() {
@@ -37,30 +50,52 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
         if current.is_empty() {
             prompt = row.prompt;
         }
+        anchors.extend(row.anchors.iter().map(|a| (current.len() + a.col, *a)));
         current.extend(cells);
         if !row.wrapped {
             let keep = cursor_offset.map_or(0, |offset| offset + 1);
             trim_trailing_blanks(&mut current, keep);
-            lines.push((std::mem::take(&mut current), cursor_offset.take(), prompt));
+            lines.push(LogicalLine {
+                cells: std::mem::take(&mut current),
+                cursor: cursor_offset.take(),
+                prompt,
+                anchors: std::mem::take(&mut anchors),
+            });
         }
     }
-    if !current.is_empty() || cursor_offset.is_some() {
+    if !current.is_empty() || cursor_offset.is_some() || !anchors.is_empty() {
         let keep = cursor_offset.map_or(0, |offset| offset + 1);
         trim_trailing_blanks(&mut current, keep);
-        lines.push((current, cursor_offset, prompt));
+        lines.push(LogicalLine {
+            cells: current,
+            cursor: cursor_offset,
+            prompt,
+            anchors,
+        });
     }
     // Empty lines below the cursor are just unused screen, not content.
-    while lines.len() > cursor_line + 1 && lines.last().is_some_and(|(cells, _, _)| cells.is_empty()) {
+    while lines.len() > cursor_line + 1
+        && lines.last().is_some_and(|l| l.cells.is_empty() && l.anchors.is_empty())
+    {
         lines.pop();
     }
 
     // Split every logical line at the new width.
     let mut out = Vec::new();
     let mut new_cursor = (0, 0);
-    for (cells, cursor_offset, prompt) in lines {
+    for line in lines {
+        let LogicalLine {
+            cells,
+            cursor: cursor_offset,
+            prompt,
+            anchors: mut line_anchors,
+        } = line;
         let len = cells.len();
         let first_row = out.len();
         let mut row: Vec<Cell> = Vec::with_capacity(cols);
+        let mut row_anchors: Vec<Anchor> = Vec::new();
+        line_anchors.sort_by_key(|(offset, _)| *offset);
+        let mut pending = line_anchors.into_iter().peekable();
         for (offset, cell) in cells.into_iter().enumerate() {
             let wide = cell.flags.contains(Flags::WIDE);
             let full = row.len() == cols || (wide && row.len() + 1 == cols && cols > 1);
@@ -73,12 +108,21 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
                     cells: std::mem::take(&mut row),
                     wrapped: true,
                     prompt: prompt && out.len() == first_row,
+                    anchors: std::mem::take(&mut row_anchors),
                 });
             }
             if cursor_offset == Some(offset) {
                 new_cursor = (out.len(), row.len());
             }
+            while let Some((_, anchor)) = pending.next_if(|(at, _)| *at <= offset) {
+                row_anchors.push(Anchor { col: row.len(), ..anchor });
+            }
             row.push(cell);
+        }
+        // Anchors past the line's (trimmed) end stay on its last row.
+        for (at, anchor) in pending {
+            let col = (row.len() + at.saturating_sub(len)).min(cols - 1);
+            row_anchors.push(Anchor { col, ..anchor });
         }
         if let Some(offset) = cursor_offset
             && offset >= len
@@ -90,6 +134,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             cells: row,
             wrapped: false,
             prompt: prompt && out.len() == first_row,
+            anchors: row_anchors,
         });
     }
     if out.is_empty() {
@@ -143,6 +188,7 @@ mod tests {
             cells,
             wrapped,
             prompt: false,
+            anchors: Vec::new(),
         }
     }
 
@@ -176,6 +222,7 @@ mod tests {
                 cells,
                 wrapped: false,
                 prompt: false,
+                anchors: Vec::new(),
             }],
             (0, 3),
             2,
@@ -186,6 +233,15 @@ mod tests {
         // And joining back drops the padding again.
         let back = reflow(out.rows, out.cursor, 4);
         assert_eq!(back.rows[0].cells[1].c, '字');
+    }
+
+    #[test]
+    fn anchors_follow_their_cell() {
+        let mut rows = vec![row("abcdef", 6, true), row("gh", 6, false)];
+        rows[1].anchors.push(Anchor { placement: 9, col: 1 });
+        // Offset 7 ("h") lands on row 1, column 3 at width 4.
+        let out = reflow(rows, (1, 2), 4);
+        assert_eq!(out.rows[1].anchors, vec![Anchor { placement: 9, col: 3 }]);
     }
 
     #[test]

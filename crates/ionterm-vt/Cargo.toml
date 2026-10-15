@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 bitflags = "2.13.2"
+miniz_oxide = "0.9.1"
+png = "0.18.1"
 tracing = "0.1.44"
 unicode-width = "0.2.2"
 vte = "0.15.0"

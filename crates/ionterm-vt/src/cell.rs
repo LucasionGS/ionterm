@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
 use crate::color::Color;
+use crate::graphics::Anchor;
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -90,6 +91,8 @@ pub struct Row {
     pub wrapped: bool,
     /// A shell prompt starts on this row (OSC 133;A).
     pub prompt: bool,
+    /// Image placements whose top-left corner is on this row.
+    pub anchors: Vec<Anchor>,
 }
 
 impl Row {
@@ -98,6 +101,7 @@ impl Row {
             cells: vec![Cell::blank(bg); cols],
             wrapped: false,
             prompt: false,
+            anchors: Vec::new(),
         }
     }
 

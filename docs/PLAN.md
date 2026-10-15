@@ -160,7 +160,8 @@ Every key has a default, so ionterm runs with no config at all.
 - [x] Tabs: Windows Terminal-style bar at the top (shown with 2+ tabs), close and new-tab buttons, drag to reorder, double-click or ctrl+shift+alt+t to rename, right-click menu (rename, duplicate, colour, close, close others), foreground-process icons; kitty Powerline styles as an option
 - [x] Splits and layouts: splits, tall, fat, grid, stack, zoom; directional focus, resizing, moving panes; new tabs and splits start in the current directory
 - [ ] Drag split borders with the mouse
-- Kitty graphics protocol: transmission (direct, file, temp file, shm), placements, z-index, deletion, animation, unicode placeholders
+- [x] Kitty graphics protocol: transmission (direct and chunked, file, temp file, shared memory; RGB, RGBA, PNG, zlib), queries and replies, placements anchored to their rows (scroll, scrollback, reflow), z-index above/below text, deletion, unicode placeholders (tmux)
+- [ ] Kitty graphics animation (`a=f`, `a=a`, `a=c`) and relative placements (`P`, `Q`)
 - Sixel
 
 ### v0.3: power features
