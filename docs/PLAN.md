@@ -203,7 +203,7 @@ Phase 3: files
 - [x] Scrollback search (ctrl+shift+f): plain or regex (alt+r), smart case, across soft wraps, every match highlighted, Enter/shift+Enter or arrows to step, re-searched as output arrives. Moving panes moved to ctrl+shift+alt+f / b
 - [x] Scrollback in a pager (ctrl+shift+h, kitty's `show_scrollback`): the whole history with colours, wrapped lines joined, opened in `less -R` in a tab at the line on screen; `[terminal] scrollback_pager` with `INPUT_LINE_NUMBER`
 - [x] Session restore (`[session] restore`, off by default): tabs, split trees with their ratios, layouts, folders, SSH hosts, tab titles and colours, saved every few seconds when they change and on window close (`$XDG_STATE_HOME/ionterm/session.toml`). Closing the last tab ends the session; with several windows the first owns it. Scrollback isn't kept
-- [x] Clear scrollback (ctrl+shift+k; at a prompt the screen too, via ctrl+l), copy the current directory, open it in the file manager (palette)
+- [x] Clear scrollback (ctrl+shift+k: the scrollback and everything above the prompt being typed, which moves to the top with its marks), copy the current directory, open it in the file manager (palette)
 - [x] Broadcast input (ctrl+shift+b): typing and pasting go to every pane of the tab, each key encoded for that pane's modes; yellow borders and a broadcast tab icon while on
 - [x] Background image (`[window] background_image`, PNG/JPEG/WebP, cover-fitted, `background_image_opacity`; reloads live, errors in a toast)
 - [x] Cursor trail (`[cursor] trail`, off by default): jumps of more than two cells leave a tapering streak that eases into the cursor over 160 ms (`app/trail.rs`)

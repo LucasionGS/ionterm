@@ -960,14 +960,7 @@ impl App {
             Action::ClearScrollback => {
                 let Some(w) = &mut self.window else { return };
                 let pane = w.active_pane();
-                let mut term = pane.lock();
-                term.clear_scrollback();
-                // At a prompt the screen goes too: ctrl+l has the shell redraw it.
-                let at_prompt = term.at_shell_prompt();
-                drop(term);
-                if at_prompt {
-                    pane.write(b"\x0c");
-                }
+                pane.lock().clear_history();
                 let id = pane.id;
                 w.search_output(id);
                 w.window.request_redraw();

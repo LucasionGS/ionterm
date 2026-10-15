@@ -611,17 +611,34 @@ impl Term {
             .collect()
     }
 
-    /// Drops every line above the screen.
-    pub fn clear_scrollback(&mut self) {
+    /// Drops the scrollback and, on the main screen, every row above the
+    /// line being typed: the prompt it starts on (shell integration) or the
+    /// cursor's row moves to the top, marks and all. Full-screen programs
+    /// keep their screen.
+    pub fn clear_history(&mut self) {
         self.scrollback.clear();
         self.display_offset = 0;
         self.dirty = true;
-    }
-
-    /// Whether the shell is waiting at its prompt (shell integration says
-    /// so), on the main screen.
-    pub fn at_shell_prompt(&self) -> bool {
-        self.editing && !self.mode.contains(TermMode::ALT_SCREEN)
+        if self.mode.contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let row = self.cursor.row;
+        let keep = if self.editing {
+            (0..=row).rev().find(|&r| self.grid[r].prompt).unwrap_or(row)
+        } else {
+            row
+        };
+        if keep == 0 {
+            return;
+        }
+        self.grid.drain(..keep);
+        let blank = Row::new(self.cols, Color::Default);
+        self.grid.resize(self.rows, blank);
+        self.cursor.row -= keep;
+        if let Some(saved) = &mut self.saved_primary {
+            saved.cursor.row = saved.cursor.row.saturating_sub(keep);
+        }
+        self.rewritten_row = self.rewritten_row.and_then(|r| r.checked_sub(keep));
     }
 
     /// The finished command whose prompt is on a viewport row: its exit
@@ -2752,5 +2769,24 @@ mod tests {
         t.resize(10, 4);
         assert_eq!(line(&t, 0), "1");
         assert_eq!(t.cursor.row, 3);
+    }
+
+    #[test]
+    fn clearing_keeps_the_prompt_and_its_marks() {
+        let mut t = Term::new(20, 5, 100, Palette::default());
+        let mut p = Processor::new();
+        for n in 0..8 {
+            p.advance(&mut t, format!("out {n}\r\n").as_bytes());
+        }
+        // A two-line prompt, being typed at.
+        p.advance(&mut t, b"\x1b]133;A\x07> ~\r\n$ ls");
+        t.clear_history();
+        assert_eq!(t.history_len(), 0);
+        assert!(t.grid[0].prompt);
+        assert_eq!(t.text_between((0, 0), (1, 19)), "> ~\n$ ls");
+        assert_eq!((t.cursor.row, t.cursor.col), (1, 4));
+        // The command's status still lands on its prompt.
+        p.advance(&mut t, b"\r\n\x1b]133;C\x07\x1b]133;D;1\x07");
+        assert_eq!(t.grid[0].status, Some(1));
     }
 }
