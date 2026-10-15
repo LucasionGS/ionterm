@@ -57,6 +57,8 @@ const MIN_FONT_SIZE: f32 = 4.0;
 const RESIZE_STEP: f32 = 0.05;
 /// The tab icon for SSH sessions without one of their own.
 const SSH_ICON: char = '\u{F233}';
+/// The tab's icon while typing goes to all its panes.
+const BROADCAST_ICON: char = '\u{F0003}';
 /// How far a tab must be dragged, in logical pixels, before it moves.
 const TAB_DRAG_THRESHOLD: f64 = 6.0;
 /// How quickly tabs glide to their slots (per second); higher is snappier.
@@ -629,8 +631,8 @@ impl App {
             w.window.request_redraw();
             return;
         }
-        pane.write(&input::encode_paste(&text, mode));
-        pane.lock().scroll_to_bottom();
+        let id = pane.id;
+        w.paste_into(id, &text);
     }
 
     fn copy_selection(&mut self, primary: bool) {
@@ -875,6 +877,11 @@ impl App {
             Action::OpenSettings => self.open_settings(),
             Action::Search => self.toggle_search(),
             Action::ShowScrollback => self.show_scrollback(),
+            Action::ToggleBroadcast => {
+                if let Some(w) = &mut self.window {
+                    w.toggle_broadcast();
+                }
+            }
             Action::CommandPalette => self.open_command_palette(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
@@ -1795,6 +1802,33 @@ impl TermWindow {
         (height / m.height).floor().max(1.0) as usize
     }
 
+    /// Turns broadcasting on or off for the active tab.
+    fn toggle_broadcast(&mut self) {
+        let tab = &mut self.tabs[self.active_tab];
+        if !tab.broadcast && tab.panes.len() < 2 {
+            self.show_toast("Broadcast needs a split: there's only one pane here");
+            return;
+        }
+        tab.broadcast = !tab.broadcast;
+        let message = if tab.broadcast {
+            format!("Typing goes to all {} panes (ctrl+shift+b to stop)", tab.panes.len())
+        } else {
+            "Typing goes to this pane only".to_string()
+        };
+        self.show_toast(message);
+        self.window.request_redraw();
+    }
+
+    /// Pastes into a pane (and its broadcast peers), as if typed.
+    fn paste_into(&self, id: PaneId, text: &str) {
+        let Some(tab) = self.tabs.iter().find(|t| t.pane(id).is_some()) else { return };
+        for pane in tab.pane(id).into_iter().chain(tab.input_peers(id)) {
+            let mode = pane.lock().mode();
+            pane.write(&input::encode_paste(text, mode));
+            pane.lock().scroll_to_bottom();
+        }
+    }
+
     fn window_rect(&self) -> Rect {
         let size = self.window.inner_size();
         Rect::new(0.0, 0.0, size.width as f32, size.height as f32)
@@ -1830,6 +1864,7 @@ impl TermWindow {
                     None => tabbar::process_icon(pane.process.as_deref()),
                 };
                 let (title, icon) = settings::tab_title(tab).unwrap_or((title, icon));
+                let icon = if tab.broadcast { BROADCAST_ICON } else { icon };
                 TabInfo {
                     title,
                     icon,
@@ -1979,9 +2014,15 @@ impl TermWindow {
         let area = tab.pane_area(area);
         let active = theme.active_border.unwrap_or(theme.tab_bar.active_background).0;
         let inactive = theme.inactive_border.unwrap_or(theme.tab_bar.inactive_background).0;
+        // Broadcasting: every pane that gets the typing is outlined in yellow.
+        let broadcast = tab.broadcast.then(|| theme.palette.colors.get(3).map_or(active, |c| c.0));
         for (id, slot) in tab.arrange(area) {
             let Some(pane) = tab.pane(id) else { continue };
-            let color = if id == tab.active { active } else { inactive };
+            let color = match broadcast {
+                Some(color) => color,
+                None if id == tab.active => active,
+                None => inactive,
+            };
             let a = pane.area;
             let strips = [
                 [slot.x, slot.y, a.x - slot.x, slot.height],
@@ -2383,6 +2424,19 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 if let Some(bytes) = input::encode_key(&event, mods, mode, flags) {
                     pane.write(&bytes);
+                    // Each peer gets the key as its own modes encode it.
+                    for peer in w.tabs[w.active_tab].input_peers(pane.id) {
+                        let (mode, flags) = {
+                            let term = peer.lock();
+                            (term.mode(), term.keyboard_flags())
+                        };
+                        if let Some(bytes) = input::encode_key(&event, mods, mode, flags) {
+                            peer.write(&bytes);
+                            if event.state == ElementState::Pressed {
+                                peer.lock().scroll_to_bottom();
+                            }
+                        }
+                    }
                     if event.state == ElementState::Pressed {
                         pane.lock().scroll_to_bottom();
                         w.blink_on = true;

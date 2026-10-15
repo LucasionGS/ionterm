@@ -30,6 +30,7 @@ const COMMANDS: &[(&str, &str, &str, char)] = &[
     ("resize_shorter", "Make pane shorter", "Panes", '\u{F0A9E}'),
     ("move_pane_forward", "Move pane forward", "Panes", '\u{F0054}'),
     ("move_pane_backward", "Move pane backward", "Panes", '\u{F004D}'),
+    ("toggle_broadcast", "Type into all panes (broadcast)", "Panes", '\u{F0003}'),
     ("next_layout", "Next layout", "Panes", '\u{F0573}'),
     ("toggle_zoom", "Zoom pane", "Panes", '\u{F0349}'),
     ("search", "Search scrollback", "Find", '\u{F0349}'),

@@ -29,6 +29,8 @@ pub struct Tab {
     pub settings: Option<SettingsPage>,
     /// What happened here while another tab was shown.
     pub activity: crate::tabbar::Activity,
+    /// Typing and pasting into the active pane goes to every pane here.
+    pub broadcast: bool,
 }
 
 impl Tab {
@@ -45,6 +47,7 @@ impl Tab {
             files: None,
             settings: None,
             activity: crate::tabbar::Activity::None,
+            broadcast: false,
         }
     }
 
@@ -67,6 +70,16 @@ impl Tab {
 
     fn effective_layout(&self) -> Layout {
         if self.zoomed { Layout::Stack } else { self.layout }
+    }
+
+    /// The panes that also get what's typed into `id`: the others in a
+    /// broadcasting tab, except where input would do harm (a ZMODEM
+    /// transfer) or go nowhere (a dropped connection).
+    pub fn input_peers(&self, id: PaneId) -> impl Iterator<Item = &Pane> {
+        let on = self.broadcast && id == self.active;
+        self.panes
+            .iter()
+            .filter(move |p| on && p.id != id && p.disconnected.is_none() && !p.zmodem.is_active())
     }
 
     /// The borders that can be dragged: only the split layout has them.

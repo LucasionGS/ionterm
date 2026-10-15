@@ -73,6 +73,7 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "ctrl+shift+alt+f" = "move_pane_forward"
 # "ctrl+shift+alt+b" = "move_pane_backward"
 # "ctrl+shift+l" = "next_layout"
+# "ctrl+shift+b" = "toggle_broadcast"      (type into every pane of the tab)
 # Unbound by default: split_right, split_down, focus_left/right/up/down,
 # resize_wider/narrower/taller/shorter, toggle_zoom
 #
@@ -93,6 +94,7 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "ctrl+shift+g" = "copy_last_command_output"
 # "ctrl+shift+e" = "hints"
 # "ctrl+shift+f" = "search"
+# "ctrl+shift+h" = "show_scrollback"
 # "ctrl+shift+p" = "command_palette"
 # "ctrl+comma" = "settings"
 # "ctrl+shift+f2" = "settings"

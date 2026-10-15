@@ -799,16 +799,13 @@ impl App {
                 files::change(proxy, pane, Some(name), move || remote.mkdir(&path).map(|()| message));
             }
             Purpose::Paste { pane, text } => {
-                let Some(p) = w.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == pane) else { return };
                 let text = match answer.button {
                     Some(0) => text,
                     // Joined into one line, nothing runs by itself.
                     Some(1) => text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" "),
                     _ => return,
                 };
-                let mode = p.lock().mode();
-                p.write(&crate::input::encode_paste(&text, mode));
-                p.lock().scroll_to_bottom();
+                w.paste_into(pane, &text);
             }
             Purpose::Conflict(mut queue) => {
                 let choice = match answer.button {
