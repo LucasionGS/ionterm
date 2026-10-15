@@ -80,6 +80,8 @@ pub const SECTIONS: &[Section] = &[
             setting("cursor", "shape", "Cursor shape", "Programs can still ask for their own.", Control::Choice(CURSOR_SHAPES)),
             setting("cursor", "blink_interval", "Cursor blink", "Seconds per blink; 0 keeps it steady.", Control::Number { min: 0.0, max: 2.0, step: 0.1, decimals: 1, unit: "s" }),
             setting("window", "opacity", "Background opacity", "Unset follows the theme.", Control::Optional { min: 0.2, max: 1.0, step: 0.05, unset: "Theme" }),
+            setting("window", "background_image", "Background image", "A PNG, JPEG or WebP behind the text; empty for none.", Control::Text { placeholder: "~/Pictures/wallpaper.jpg" }),
+            setting("window", "background_image_opacity", "Image strength", "How strongly the picture shows through.", Control::Number { min: 0.05, max: 1.0, step: 0.05, decimals: 2, unit: "" }),
             setting("window", "padding", "Padding", "Space around the text.", Control::Number { min: 0.0, max: 40.0, step: 1.0, decimals: 0, unit: "px" }),
             setting("window", "decorations", "Window decorations", "Auto: none under Hyprland, which draws its own borders.", Control::Choice(DECORATIONS)),
         ],
@@ -159,6 +161,8 @@ pub fn value_of(config: &Config, setting: &Setting) -> Value {
         ("cursor", "blink_interval") => Value::Number(f64::from(config.cursor.blink_interval)),
         ("window", "opacity") => config.window.opacity.map_or(Value::Unset, |o| Value::Number(f64::from(o))),
         ("window", "padding") => Value::Number(f64::from(config.window.padding)),
+        ("window", "background_image") => Value::Text(config.window.background_image.clone()),
+        ("window", "background_image_opacity") => Value::Number(f64::from(config.window.background_image_opacity)),
         ("window", "decorations") => text(match config.window.decorations {
             D::Auto => "auto",
             D::Full => "full",

@@ -10,6 +10,8 @@ repository.workspace = true
 anyhow = "1.0.104"
 arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 dirs = "7.0.0"
+# Background images (png is already in the tree through arboard).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 ionterm-render = { version = "0.1.0", path = "../ionterm-render" }
 ionterm-vt = { version = "0.1.0", path = "../ionterm-vt" }
 notify = "8.2.0"

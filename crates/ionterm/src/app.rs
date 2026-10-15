@@ -1,6 +1,7 @@
 //! The winit application: owns the window and its tabs of panes, and routes
 //! events between the window system, the panes and the renderer.
 
+mod background;
 mod drag;
 mod files;
 mod hints;
@@ -330,6 +331,13 @@ impl App {
             split_drag: None,
         };
         w.drops = dnd::listen(&w.window, self.proxy.clone());
+        match background::load(&self.config.window) {
+            Ok(picture) => w.renderer.set_background(picture),
+            Err(message) => {
+                tracing::warn!("{message}");
+                w.show_toast(message);
+            }
+        }
         w.relayout(&self.config, false);
         Ok(w)
     }
@@ -549,6 +557,8 @@ impl App {
         }
         tracing::info!("configuration reloaded");
         let font_changed = config.font != self.config.font;
+        let background_changed = (&config.window.background_image, config.window.background_image_opacity)
+            != (&self.config.window.background_image, self.config.window.background_image_opacity);
         self.bindings = input::build_bindings(&config.keybindings);
         // `ionterm -e` isn't part of the file; keep it.
         let command = std::mem::take(&mut self.config.terminal.command);
@@ -564,6 +574,12 @@ impl App {
         }
         w.renderer.set_style(style);
         w.renderer.set_font(font_options(&self.config.font, w.font_size, w.scale_factor));
+        if background_changed {
+            match background::load(&self.config.window) {
+                Ok(picture) => w.renderer.set_background(picture),
+                Err(message) => w.show_toast(message),
+            }
+        }
         let downloads = transfer::download_dir(&self.config.files.download_dir);
         for pane in w.tabs.iter().flat_map(|t| &t.panes) {
             pane.zmodem.set_download_dir(downloads.clone());

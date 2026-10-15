@@ -135,6 +135,11 @@ pub struct WindowConfig {
     /// Initial size in cells.
     pub columns: u16,
     pub lines: u16,
+    /// A picture behind the text (PNG, JPEG or WebP; `~` is your home).
+    /// Empty = none.
+    pub background_image: String,
+    /// How strongly the picture shows through the background colour, 0–1.
+    pub background_image_opacity: f32,
 }
 
 impl Default for WindowConfig {
@@ -145,6 +150,8 @@ impl Default for WindowConfig {
             opacity: None,
             columns: 100,
             lines: 30,
+            background_image: String::new(),
+            background_image_opacity: 0.25,
         }
     }
 }

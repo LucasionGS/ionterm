@@ -65,6 +65,14 @@ pub enum LinkHighlight {
     Span(Selection),
 }
 
+/// A picture behind the terminal, filling the window (cropped to fit).
+#[derive(Clone, Debug)]
+pub struct Background {
+    pub image: Image,
+    /// How strongly it shows over the background colour, 0–1.
+    pub opacity: f32,
+}
+
 /// One terminal pane to draw.
 pub struct PaneView<'a> {
     pub snapshot: &'a Snapshot,
@@ -180,6 +188,7 @@ pub struct Renderer {
     supports_transparency: bool,
     scratch: Vec<Instance>,
     images: ImageCache,
+    background: Option<Background>,
 }
 
 impl Renderer {
@@ -408,6 +417,7 @@ impl Renderer {
             supports_transparency,
             scratch: Vec::new(),
             images: image_cache,
+            background: None,
         })
     }
 
@@ -430,6 +440,10 @@ impl Renderer {
         if self.fonts.set_options(font) {
             self.atlas.clear();
         }
+    }
+
+    pub fn set_background(&mut self, background: Option<Background>) {
+        self.background = background;
     }
 
     pub fn set_style(&mut self, style: RenderStyle) {
@@ -463,6 +477,9 @@ impl Renderer {
             }
         };
 
+        if let Some(background) = &self.background {
+            self.images.prepare(&self.device, &self.queue, &background.image);
+        }
         for pane in panes {
             let snapshot = pane.snapshot;
             let images = snapshot.images.iter().map(|d| &d.image);
@@ -584,6 +601,19 @@ impl Renderer {
     /// of space part-way through.
     fn build_frame(&mut self, panes: &[PaneView], chrome: &Chrome, out: &mut Vec<Instance>) -> bool {
         let opacity = self.style.background_opacity.clamp(0.0, 1.0);
+        if let Some(background) = &self.background {
+            let (width, height) = (self.config.width as f32, self.config.height as f32);
+            let image = &background.image;
+            let (iw, ih) = (image.width as f32, image.height as f32);
+            // Cover the window, centred, cropping whatever sticks out.
+            let scale = (width / iw).max(height / ih);
+            let (w, h) = (iw * scale, ih * scale);
+            let dest = [((width - w) / 2.0).round(), ((height - h) / 2.0).round(), w, h];
+            push_image(out, image, [0.0, 0.0, iw, ih], dest, [0.0, 0.0, width, height]);
+            if let Some(quad) = out.last_mut() {
+                quad.color[3] = background.opacity.clamp(0.0, 1.0);
+            }
+        }
         for pane in panes {
             let bg = pane.snapshot.palette.background;
             if bg != chrome.background {

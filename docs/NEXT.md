@@ -171,7 +171,7 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
 
 - **v0.3b power features:**
   - Scrollback search.
-  - Background image; cursor trail.
+  - Cursor trail (background image done: `app/background.rs`, `Renderer::set_background`).
 - **v0.2 leftovers:** kitty graphics animation (`a=f`, `a=a`, `a=c`), relative placements (`P`, `Q`).
 - **v0.4:**
   - Upstream `extras/ionix-styler` into `/home/ion/development/ionix/profile/airootfs/usr/local/share/ionix/styler/`, then make ionterm the Ionix default terminal (replace kitty in Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab's btop launcher).
