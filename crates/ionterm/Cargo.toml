@@ -13,6 +13,7 @@ dirs = "7.0.0"
 ionterm-render = { version = "0.1.0", path = "../ionterm-render" }
 ionterm-vt = { version = "0.1.0", path = "../ionterm-vt" }
 notify = "8.2.0"
+png = "0.18.1"
 pollster = "1.0.1"
 portable-pty = "0.9.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -22,3 +23,6 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2.2"
 winit = "0.30.13"
+
+[build-dependencies]
+embed-resource = "3.0.12"

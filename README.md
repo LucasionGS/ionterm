@@ -37,5 +37,6 @@ Run `ionterm -e <command>` to start something other than your shell, for example
 
 - Rust workspace: `ionterm-vt` (terminal state, no I/O), `ionterm-render` (wgpu renderer and fonts), `ionterm` (the app).
 - Build with `cargo build --release`; the binary ends up in `target/release/ionterm`. On Arch, `makepkg -si` with the included PKGBUILD.
+- To use the dev build as a regular app (launcher entry and taskbar icon), run `scripts/install-dev.sh`; `scripts/install-dev.sh uninstall` removes it again.
 - Run the tests with `cargo test --workspace`. Set `IONTERM_LOG=debug` to see unhandled escape sequences, or `IONTERM_DUMP=<file>` to record everything programs print.
 - The styler files to upstream into Ionix are in [extras/ionix-styler](extras/ionix-styler).

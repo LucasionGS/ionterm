@@ -198,7 +198,7 @@ impl App {
             use winit::platform::wayland::WindowAttributesExtWayland;
             attributes.with_name("ionterm", "ionterm")
         };
-        let window = Arc::new(event_loop.create_window(attributes).context("creating the window")?);
+        let window = Arc::new(event_loop.create_window(attributes.with_window_icon(window_icon())).context("creating the window")?);
         window.set_cursor(CursorIcon::Text);
 
         let scale_factor = window.scale_factor();
@@ -1704,6 +1704,22 @@ impl TermWindow {
             self.last_frame = None;
         }
     }
+}
+
+/// The window icon, for platforms that take it from the app (X11, Windows).
+/// Wayland compositors use the `.desktop` file's icon instead.
+fn window_icon() -> Option<winit::window::Icon> {
+    const PNG: &[u8] = include_bytes!("../../../data/icons/hicolor/64x64/apps/ionterm.png");
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(PNG));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgba).ok()?;
+    rgba.truncate(info.buffer_size());
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    winit::window::Icon::from_rgba(rgba, info.width, info.height).ok()
 }
 
 /// Shrinks a pane's slot by `border` on the sides that face another pane,

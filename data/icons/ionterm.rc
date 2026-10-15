@@ -1,0 +1,2 @@
+// The ionterm.exe icon, compiled into the binary by crates/ionterm/build.rs.
+1 ICON "ionterm.ico"

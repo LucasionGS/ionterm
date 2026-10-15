@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Ionix Terminal mark: the "Carved" gem reshaped into a ">" prompt chevron.
+       Same gradient, outline, dark pupil and carved slits as the main logo;
+       the slits are mirrored top/bottom to follow the chevron's symmetry. -->
+  <defs>
+    <linearGradient id="ionixGrad" gradientUnits="userSpaceOnUse" x1="150" y1="40" x2="362" y2="472">
+      <stop offset="0" stop-color="#c385ff"/>
+      <stop offset="1" stop-color="#a0e6ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Pupil -->
+  <path d="M306.0,214.0L332.0,256.0L306.0,298.0L280.0,256.0Z" fill="#0f0a18"/>
+
+  <!-- Gem body with slits (pupil punched out via evenodd) -->
+  <path d="M126.0,472.0L202.6,408.4L184.1,386.0L278.1,308.0L256.8,273.7L268.7,266.3L296.4,311.0L203.8,387.9L213.4,399.4L386.0,256.0L213.4,112.6L203.8,124.1L296.4,201.0L268.7,245.7L256.8,238.3L278.1,204.0L184.1,126.0L202.6,103.6L126.0,40.0L214.0,256.0ZM332.0,256.0L306.0,298.0L280.0,256.0L306.0,214.0Z" fill="url(#ionixGrad)" fill-rule="evenodd"
+        stroke="#0f0a18" stroke-width="4" stroke-linejoin="round"/>
+</svg>
