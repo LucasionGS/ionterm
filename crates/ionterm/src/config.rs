@@ -87,6 +87,7 @@ pub struct Config {
     pub layouts: LayoutConfig,
     pub files: FilesConfig,
     pub hints: HintsConfig,
+    pub notifications: NotificationsConfig,
     /// Key combo → action name, merged over the defaults. `"none"` unbinds.
     pub keybindings: HashMap<String, String>,
 }
@@ -143,6 +144,26 @@ impl Default for WindowConfig {
             opacity: None,
             columns: 100,
             lines: 30,
+        }
+    }
+}
+
+/// Desktop notifications.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    /// Seconds a command must run before its end is announced when you're
+    /// elsewhere (another tab, another window). 0 turns it off.
+    pub command_done_after: f32,
+    /// Let programs send notifications (OSC 9 and OSC 777).
+    pub from_programs: bool,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            command_done_after: 10.0,
+            from_programs: true,
         }
     }
 }

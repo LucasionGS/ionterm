@@ -110,6 +110,13 @@ pub enum TermEvent {
     Progress(Option<Progress>),
     /// The shell shows its prompt again (OSC 133;A): any command is over.
     Prompt,
+    /// A command started (OSC 133;C), with its command line when the shell
+    /// sends it (`cmdline_url=` from fish, `cmdline=` from zsh).
+    CommandStarted(Option<String>),
+    /// The running command finished (OSC 133;D), with its exit status.
+    CommandFinished(Option<i32>),
+    /// A program asked for a desktop notification (OSC 9 or OSC 777).
+    Notify { title: String, body: String },
 }
 
 /// What `ionterm-get` and `ionterm-put` ask for, with absolute remote paths.
@@ -1805,6 +1812,7 @@ impl Perform for Term {
                     self.command_running = true;
                     let row = self.cursor.row;
                     self.grid[row].output = true;
+                    self.events.push(TermEvent::CommandStarted(command_line(&params[2..])));
                 }
                 // Command finished, with its exit status.
                 Some(Some(b'D')) => {
@@ -1814,14 +1822,26 @@ impl Perform for Term {
                         .get(2)
                         .and_then(|p| std::str::from_utf8(p).ok())
                         .and_then(|p| p.parse::<i32>().ok());
-                    if std::mem::take(&mut self.command_running)
-                        && let Some(status) = status
-                    {
-                        self.mark_status(status);
+                    if std::mem::take(&mut self.command_running) {
+                        if let Some(status) = status {
+                            self.mark_status(status);
+                        }
+                        self.events.push(TermEvent::CommandFinished(status));
                     }
                 }
                 _ => {}
             },
+            // OSC 9 ; text: a notification (iTerm2, ConEmu).
+            "9" if params.get(1).is_some_and(|p| *p != b"4") => {
+                let body = params[1..].iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(";");
+                self.events.push(TermEvent::Notify { title: String::new(), body });
+            }
+            // OSC 777 ; notify ; title ; body (urxvt, foot, Ghostty).
+            "777" if params.get(1).copied() == Some(b"notify") => {
+                let text = |i: usize| params.get(i).map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
+                let body = params.get(3..).map(|rest| rest.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(";")).unwrap_or_default();
+                self.events.push(TermEvent::Notify { title: text(2), body });
+            }
             // OSC 9 ; 4 ; state ; percent (ConEmu, Windows Terminal).
             "9" if params.get(1).copied() == Some(b"4") => {
                 let number = |i: usize| {
@@ -2320,6 +2340,43 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
+/// The command line in OSC 133;C's parameters: `cmdline_url=` (percent
+/// encoded, fish) or `cmdline=` (as is; it may contain `;`, so the rest of
+/// the parameters belong to it).
+fn command_line(params: &[&[u8]]) -> Option<String> {
+    for (i, param) in params.iter().enumerate() {
+        if let Some(url) = param.strip_prefix(b"cmdline_url=") {
+            return Some(percent_decode(url));
+        }
+        if let Some(raw) = param.strip_prefix(b"cmdline=") {
+            let mut text = String::from_utf8_lossy(raw).into_owned();
+            for rest in &params[i + 1..] {
+                text.push(';');
+                text.push_str(&String::from_utf8_lossy(rest));
+            }
+            return Some(text);
+        }
+    }
+    None
+}
+
+fn percent_decode(bytes: &[u8]) -> String {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(byte) = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// The last percentage in a line of text, like `45%` or `12.5 %`.
 fn last_percentage(text: &str) -> Option<f32> {
     let chars: Vec<char> = text.chars().collect();
@@ -2435,6 +2492,32 @@ mod tests {
         // Back at the prompt, a battery level isn't progress.
         p.advance(&mut t, b"\r\n\x1b]133;A\x07bat 80% $ \r");
         assert_eq!(t.progress_hint(), None);
+    }
+
+    #[test]
+    fn reports_commands_and_notifications() {
+        let (mut t, mut p) = term(30, 4);
+        p.advance(&mut t, b"\x1b]133;A\x07$ \x1b]133;C;cmdline_url=make%20-j8\x07");
+        p.advance(&mut t, b"\x1b]133;D;2\x07\x1b]133;C;cmdline=ls;cd x\x07\x1b]133;D;0\x07");
+        p.advance(&mut t, b"\x1b]777;notify;Build;all done\x07\x1b]9;ping\x07");
+        let events: Vec<_> = t.take_events().into_iter().filter(|e| !matches!(e, TermEvent::Prompt)).collect();
+        assert_eq!(
+            events,
+            vec![
+                TermEvent::CommandStarted(Some("make -j8".into())),
+                TermEvent::CommandFinished(Some(2)),
+                TermEvent::CommandStarted(Some("ls;cd x".into())),
+                TermEvent::CommandFinished(Some(0)),
+                TermEvent::Notify {
+                    title: "Build".into(),
+                    body: "all done".into()
+                },
+                TermEvent::Notify {
+                    title: String::new(),
+                    body: "ping".into()
+                },
+            ]
+        );
     }
 
     #[test]

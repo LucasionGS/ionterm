@@ -42,7 +42,8 @@ use crate::palette::{self, Palette, PaletteAction, PaletteItem};
 use crate::ssh::{self, Connection, HostExtras};
 use crate::pane::{Pane, SelectionKind, SelectionState};
 use crate::tab::Tab;
-use crate::tabbar::{self, Hit, TabInfo};
+use crate::tabbar::{self, Activity, Hit, TabInfo};
+use crate::notifications;
 use crate::theme::Theme;
 
 /// Longest a synchronized update (mode 2026) may hold back a frame.
@@ -975,6 +976,8 @@ impl App {
         let mut remote_cwd = false;
         let mut file_requests = Vec::new();
         let mut progress_changed = false;
+        let mut finished = None;
+        let mut notifications = Vec::new();
         for event in events {
             match event {
                 TermEvent::Title(title) => {
@@ -989,6 +992,13 @@ impl App {
                 TermEvent::Progress(progress) => progress_changed |= pane.report_progress(progress),
                 // Back at the prompt: whatever was in progress is over.
                 TermEvent::Prompt => progress_changed |= pane.report_progress(None),
+                TermEvent::CommandStarted(line) => pane.command = Some((Instant::now(), line)),
+                TermEvent::CommandFinished(status) => {
+                    if let Some((started, line)) = pane.command.take() {
+                        finished = Some((started.elapsed(), line, status));
+                    }
+                }
+                TermEvent::Notify { title, body } => notifications.push((title, body)),
             }
         }
         progress_changed |= pane.guess_progress();
@@ -1001,6 +1011,37 @@ impl App {
         redraw |= progress_changed && bar_shown;
         if bell && !focused {
             w.window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+        }
+        // Marks on tabs you're not looking at.
+        let elsewhere = tab_index != w.active_tab;
+        let long_after = self.config.notifications.command_done_after;
+        let long = finished.as_ref().filter(|f| long_after > 0.0 && f.0.as_secs_f32() >= long_after);
+        if elsewhere {
+            let tab = &mut w.tabs[tab_index];
+            let before = tab.activity;
+            tab.activity = match (long, bell, before) {
+                (_, true, _) => Activity::Bell,
+                (Some(f), _, _) => Activity::Done(f.2.is_none_or(|s| s == 0)),
+                (None, false, Activity::None) => Activity::Output,
+                (None, false, other) => other,
+            };
+            redraw |= bar_shown && tab.activity != before;
+        }
+        // A long command ended while you were elsewhere: say so.
+        if let Some((took, line, status)) = long
+            && (elsewhere || !focused)
+        {
+            let what = line.as_deref().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("Command");
+            let title = match status {
+                Some(0) | None => format!("✓ {}", crate::tabbar::truncate(what, 60)),
+                Some(code) => format!("✗ {} (exit {code})", crate::tabbar::truncate(what, 60)),
+            };
+            notifications::send(&title, &format!("Finished after {}", notifications::duration(*took)));
+        }
+        if self.config.notifications.from_programs {
+            for (title, body) in notifications {
+                notifications::send(&title, &body);
+            }
         }
         if redraw {
             w.window.request_redraw();
@@ -1594,6 +1635,7 @@ impl TermWindow {
             send_focus(self.active_pane(), false);
         }
         self.active_tab = index;
+        self.tabs[index].activity = Activity::None;
         if self.focused {
             send_focus(self.active_pane(), true);
         }
@@ -1689,6 +1731,7 @@ impl TermWindow {
                     color: tab.color.or(extras.and_then(|e| e.color).map(|c| c.0)),
                     active: i == self.active_tab,
                     progress: self.tab_progress(i),
+                    activity: tab.activity,
                 }
             })
             .collect()

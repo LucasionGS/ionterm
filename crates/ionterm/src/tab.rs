@@ -27,6 +27,8 @@ pub struct Tab {
     /// This is the settings tab: the page shows instead of the pane, which
     /// only runs the editor when a config file is opened.
     pub settings: Option<SettingsPage>,
+    /// What happened here while another tab was shown.
+    pub activity: crate::tabbar::Activity,
 }
 
 impl Tab {
@@ -42,6 +44,7 @@ impl Tab {
             color: None,
             files: None,
             settings: None,
+            activity: crate::tabbar::Activity::None,
         }
     }
 

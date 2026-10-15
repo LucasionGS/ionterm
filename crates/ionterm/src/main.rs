@@ -12,6 +12,7 @@ mod input;
 mod layout;
 mod links;
 mod menu;
+mod notifications;
 mod palette;
 mod pane;
 mod pty;

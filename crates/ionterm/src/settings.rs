@@ -104,6 +104,8 @@ pub const SECTIONS: &[Section] = &[
             setting("terminal", "wheel_scroll_lines", "Wheel scroll", "Lines per mouse wheel notch.", Control::Number { min: 1.0, max: 20.0, step: 1.0, decimals: 0, unit: "lines" }),
             setting("terminal", "advertise_sixel", "Announce Sixel", "Sixel images show either way; announcing it makes yazi prefer it over kitty graphics.", Control::Toggle),
             setting("layouts", "border_width", "Split borders", "Width of the line between panes.", Control::Number { min: 0.0, max: 10.0, step: 1.0, decimals: 0, unit: "px" }),
+            setting("notifications", "command_done_after", "Notify after", "Announce commands that ran this long when you're in another tab or window; 0 turns it off.", Control::Number { min: 0.0, max: 600.0, step: 5.0, decimals: 0, unit: "s" }),
+            setting("notifications", "from_programs", "Program notifications", "Let programs pop up desktop notifications (OSC 9 and 777).", Control::Toggle),
         ],
     },
     Section {
@@ -180,6 +182,8 @@ pub fn value_of(config: &Config, setting: &Setting) -> Value {
         ("terminal", "wheel_scroll_lines") => Value::Number(config.terminal.wheel_scroll_lines as f64),
         ("terminal", "advertise_sixel") => Value::Bool(config.terminal.advertise_sixel),
         ("layouts", "border_width") => Value::Number(f64::from(config.layouts.border_width)),
+        ("notifications", "command_done_after") => Value::Number(f64::from(config.notifications.command_done_after)),
+        ("notifications", "from_programs") => Value::Bool(config.notifications.from_programs),
         ("files", "download_dir") => Value::Text(config.files.download_dir.clone()),
         ("files", "show_hidden") => Value::Bool(config.files.show_hidden),
         ("files", "panel_width") => Value::Number(f64::from(config.files.panel_width)),

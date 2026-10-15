@@ -12,8 +12,9 @@ if [[ -z $__ionterm_integrated ]]; then
   }
   # Last precmd, right before the prompt is drawn: it starts here.
   __ionterm_prompt() { print -n "\e]133;A\a" }
-  # A command line was accepted: its output starts here.
-  __ionterm_preexec() { print -n "\e]133;C\a" }
+  # A command line was accepted: its output starts here. The command
+  # goes along (control characters blanked) for "finished" notifications.
+  __ionterm_preexec() { print -nr -- $'\e]133;C;cmdline='"${1//[[:cntrl:]]/ }"$'\a' }
 
   autoload -Uz add-zsh-hook
   add-zsh-hook preexec __ionterm_preexec

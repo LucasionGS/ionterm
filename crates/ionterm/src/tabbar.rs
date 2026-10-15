@@ -15,6 +15,21 @@ pub struct TabInfo {
     pub color: Option<Rgb>,
     pub active: bool,
     pub progress: Option<TabProgress>,
+    /// What happened in it while you were in another tab.
+    pub activity: Activity,
+}
+
+/// Something that happened in a tab you weren't looking at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Activity {
+    #[default]
+    None,
+    /// It printed something.
+    Output,
+    /// A long command finished: `true` when it succeeded.
+    Done(bool),
+    /// It rang the bell.
+    Bell,
 }
 
 /// A progress bar along the bottom of a tab.
@@ -416,6 +431,37 @@ fn draw_tabs(
         }
         if let Some(progress) = tab.progress {
             draw_progress(progress, r, theme, scale, phase, out);
+        }
+        // Activity shows where the close button would, on tabs without one.
+        let shows_close = slot.close.is_some() && (tab.active || hovered);
+        if let (false, Some(close)) = (shows_close, slot.close) {
+            let palette = theme.palette();
+            let glyph = match tab.activity {
+                Activity::None => None,
+                Activity::Output => {
+                    let d = (6.0 * scale).round();
+                    out.push(ChromeItem::RoundedRect {
+                        rect: [close.x + ((close.width - d) / 2.0).round(), close.y + ((close.height - d) / 2.0).round(), d, d],
+                        radius: d / 2.0,
+                        top_only: false,
+                        color: theme.cursor.0,
+                        alpha: 1.0,
+                    });
+                    None
+                }
+                Activity::Done(true) => Some(("\u{F012C}", palette.colors[2])),
+                Activity::Done(false) => Some(("\u{F0156}", palette.colors[1])),
+                Activity::Bell => Some(("\u{F009A}", palette.colors[3])),
+            };
+            if let Some((glyph, color)) = glyph {
+                out.push(ChromeItem::Text {
+                    text: glyph.into(),
+                    x: close.x + ((close.width - m.width) / 2.0).round(),
+                    y: close.y + ((close.height - m.height) / 2.0).round(),
+                    color,
+                    bold: false,
+                });
+            }
         }
     }
 

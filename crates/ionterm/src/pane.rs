@@ -79,6 +79,9 @@ pub struct Pane {
     pub zmodem: Arc<zmodem::Shared>,
     /// Progress shown in the tab, while there is some.
     pub progress: Option<PaneProgress>,
+    /// The command running (shell integration): when it started, and its
+    /// command line when the shell says.
+    pub command: Option<(Instant, Option<String>)>,
 }
 
 /// A pane's progress: reported by the program (OSC 9;4), or read from a
@@ -150,6 +153,7 @@ impl Pane {
             process_checked: None,
             zmodem,
             progress: None,
+            command: None,
         })
     }
 
