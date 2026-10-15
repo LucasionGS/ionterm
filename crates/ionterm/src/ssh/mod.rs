@@ -128,20 +128,58 @@ fn control_options(master: bool) -> Vec<String> {
     options
 }
 
-/// Where shared-connection sockets live: a private directory in the cache.
-/// `None` on Windows, whose OpenSSH has no connection sharing.
+/// The longest directory a control socket fits in: sockets paths are cut
+/// at 108 bytes, and ssh adds 41 for `/%C` plus a 17-byte temporary suffix
+/// while it sets the master up.
+const MAX_CONTROL_DIR: usize = 48;
+
+/// Where shared-connection sockets live: a private directory in the cache,
+/// or in the runtime directory (then `/tmp`) when the cache's path is too
+/// long for a socket. `None` on Windows, whose OpenSSH has no connection
+/// sharing.
 fn control_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         return None;
     }
-    let dir = dirs::cache_dir()?.join("ionterm").join("ssh");
+    let candidates = [
+        dirs::cache_dir().map(|d| d.join("ionterm").join("ssh")),
+        dirs::runtime_dir().map(|d| d.join("ionterm-ssh")),
+        Some(std::env::temp_dir().join(format!("ionterm-ssh-{}", user_tag()))),
+    ];
+    let dir = candidates
+        .into_iter()
+        .flatten()
+        .find(|d| d.as_os_str().len() <= MAX_CONTROL_DIR)?;
     std::fs::create_dir_all(&dir).ok()?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // In a shared /tmp someone else may have made it first.
+        let mine = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir() && Some(m.uid()) == own_uid());
+        if !mine {
+            return None;
+        }
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
     Some(dir)
+}
+
+/// Tells users' directories in a shared `/tmp` apart.
+fn user_tag() -> String {
+    #[cfg(unix)]
+    if let Some(uid) = own_uid() {
+        return uid.to_string();
+    }
+    std::env::var("USER").unwrap_or_default()
+}
+
+/// This process's user.
+#[cfg(unix)]
+fn own_uid() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    return Some(rustix::process::getuid().as_raw());
+    #[cfg(not(target_os = "linux"))]
+    return None;
 }
 
 /// This machine's name, to tell local OSC 7 reports from remote ones.
