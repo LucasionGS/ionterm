@@ -3,6 +3,7 @@
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
 
+use crate::input::Action;
 use crate::layout::Rect;
 use crate::tabbar::{mix, truncate};
 use crate::theme::Theme;
@@ -16,6 +17,8 @@ pub enum PaletteAction {
     /// Open a host in the connection editor.
     Edit(String),
     NewConnection,
+    /// Run an action (the command palette).
+    Command(Action),
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +43,10 @@ pub struct Palette {
     pub anchor: Option<(f32, f32)>,
     /// Filtered row under the mouse.
     pub hover: Option<usize>,
+    /// What the search field says while empty.
+    pub placeholder: &'static str,
+    /// The key hints along the bottom.
+    pub footer: &'static str,
 }
 
 impl Palette {
@@ -51,6 +58,17 @@ impl Palette {
             scroll: 0,
             anchor,
             hover: None,
+            placeholder: "Connect to an SSH host…",
+            footer: "↵ connect   ctrl+↵ split   ctrl+e edit   esc close",
+        }
+    }
+
+    /// The command palette: actions first, then hosts to connect to.
+    pub fn commands(items: Vec<PaletteItem>) -> Self {
+        Self {
+            placeholder: "Run a command, or connect to a host…",
+            footer: "↵ run   esc close",
+            ..Self::new(items, None)
         }
     }
 
@@ -61,7 +79,7 @@ impl Palette {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| matches!(item.action, PaletteAction::Connect(_)))
+            .filter(|(_, item)| matches!(item.action, PaletteAction::Connect(_) | PaletteAction::Command(_)))
             .filter_map(|(i, item)| {
                 let haystack = format!("{} {} {}", item.title, item.detail, item.group);
                 fuzzy_score(&self.query, &haystack, item.title.len()).map(|score| (score, i))
@@ -73,7 +91,7 @@ impl Palette {
             self.items
                 .iter()
                 .enumerate()
-                .filter(|(_, item)| !matches!(item.action, PaletteAction::Connect(_)))
+                .filter(|(_, item)| !matches!(item.action, PaletteAction::Connect(_) | PaletteAction::Command(_)))
                 .map(|(i, _)| i),
         );
         out
@@ -250,7 +268,7 @@ pub fn draw(palette: &Palette, layout: &PaletteLayout, theme: &Theme, m: CellMet
     let query_cols = ((i.width - (query_x - i.x) - m.width) / m.width).max(1.0) as usize;
     if palette.query.is_empty() {
         out.push(ChromeItem::Text {
-            text: "Connect to an SSH host…".into(),
+            text: palette.placeholder.into(),
             x: query_x,
             y: text_y,
             color: muted,
@@ -342,7 +360,7 @@ pub fn draw(palette: &Palette, layout: &PaletteLayout, theme: &Theme, m: CellMet
     }
 
     out.push(ChromeItem::Text {
-        text: "↵ connect   ctrl+↵ split   ctrl+e edit   esc close".into(),
+        text: palette.footer.into(),
         x: p.x + (14.0 * scale).round(),
         y: layout.footer_y,
         color: muted,

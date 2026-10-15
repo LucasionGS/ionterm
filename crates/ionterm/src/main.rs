@@ -1,6 +1,7 @@
 //! ionterm: a GPU-rendered terminal emulator for the Ionix desktop.
 
 mod app;
+mod commands;
 mod config;
 mod dialog;
 mod dnd;

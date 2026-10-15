@@ -373,6 +373,36 @@ impl App {
         w.window.request_redraw();
     }
 
+    /// The command palette: every action with its keys, then the hosts.
+    fn open_command_palette(&mut self) {
+        let extras = ssh::load_extras();
+        let commands = crate::commands::catalogue(&self.bindings).into_iter().map(|command| PaletteItem {
+            title: command.title.into(),
+            detail: command.keys,
+            group: command.group.into(),
+            icon: command.icon,
+            color: None,
+            action: PaletteAction::Command(command.action),
+        });
+        let hosts = ssh::load_hosts().into_iter().map(|host| {
+            let extra = extras.get(&host.alias);
+            PaletteItem {
+                title: format!("SSH: {}", host.alias),
+                detail: host.target(),
+                group: "SSH hosts".into(),
+                icon: extra.and_then(HostExtras::icon_char).unwrap_or(SSH_ICON),
+                color: extra.and_then(|e| e.color).map(|c| c.0),
+                action: PaletteAction::Connect(host.alias),
+            }
+        });
+        let items = commands.chain(hosts).collect();
+        let Some(w) = &mut self.window else { return };
+        w.ssh_extras = extras;
+        w.palette = Some(Palette::commands(items));
+        w.menu = None;
+        w.window.request_redraw();
+    }
+
     /// Runs the picker's choice: connect in a new tab, or in a split.
     fn run_palette(&mut self, action: PaletteAction, split: bool) {
         if let Some(w) = &mut self.window {
@@ -389,6 +419,7 @@ impl App {
                     self.open_tab(end, Some(connection), None);
                 }
             }
+            PaletteAction::Command(action) => self.perform(action),
             PaletteAction::NewConnection => {
                 let editor = Editor::new(&self.theme);
                 if let Some(w) = &mut self.window {
@@ -794,6 +825,7 @@ impl App {
             Action::Hints => self.toggle_hints(),
             Action::OpenSettings => self.open_settings(),
             Action::Search => self.toggle_search(),
+            Action::CommandPalette => self.open_command_palette(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
