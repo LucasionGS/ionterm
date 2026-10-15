@@ -72,24 +72,17 @@ pub fn load_extras() -> HashMap<String, HostExtras> {
 pub struct Connection {
     pub alias: String,
     pub argv: Vec<String>,
+    /// Built by ionterm from a host alias (rather than copied from a typed
+    /// `ssh`), so extra commands can share its connection: the file panel
+    /// works only for these.
+    pub managed: bool,
 }
 
 impl Connection {
     /// Builds the `ssh` command for a host alias.
     pub fn new(alias: &str, host: Option<&SshHost>, extras: Option<&HostExtras>) -> Self {
         let mut argv = vec!["ssh".to_string()];
-        if let Some(dir) = control_dir() {
-            argv.extend([
-                "-o".into(),
-                "ControlMaster=auto".into(),
-                "-o".into(),
-                format!("ControlPath={}", dir.join("%C").display()),
-                "-o".into(),
-                // Keep the shared connection a while after the last tab closes,
-                // so reopening is instant.
-                "ControlPersist=300".into(),
-            ]);
-        }
+        argv.extend(control_options(true));
         let integration = extras.and_then(|e| e.integration).unwrap_or(true) && !host.is_some_and(|h| h.remote_command);
         if integration {
             argv.extend(["-t".into(), alias.to_string(), bootstrap::remote_command()]);
@@ -99,8 +92,40 @@ impl Connection {
         Self {
             alias: alias.to_string(),
             argv,
+            managed: true,
         }
     }
+
+    /// The start of an `ssh` command that runs one non-interactive command
+    /// on this host over the shared connection; the remote command follows.
+    /// `BatchMode` makes it fail rather than ask for a password where no
+    /// shared connection exists (Windows, or the master went away).
+    pub fn exec_argv(&self) -> Vec<String> {
+        let mut argv = vec!["ssh".to_string()];
+        argv.extend(control_options(false));
+        argv.extend(["-o".into(), "BatchMode=yes".into(), "-T".into(), "--".into(), self.alias.clone()]);
+        argv
+    }
+}
+
+/// The options that make `ssh` share one master connection per host.
+/// `master` lets this `ssh` become the master when none is running; one-off
+/// commands never do, because a backgrounded master keeps their stderr pipe
+/// open, and reading it would wait for the master to exit.
+fn control_options(master: bool) -> Vec<String> {
+    let Some(dir) = control_dir() else { return Vec::new() };
+    let mut options = vec![
+        "-o".into(),
+        format!("ControlPath={}", dir.join("%C").display()),
+        "-o".into(),
+        if master { "ControlMaster=auto" } else { "ControlMaster=no" }.into(),
+    ];
+    if master {
+        // Keep the shared connection a while after the last tab closes,
+        // so reopening is instant.
+        options.extend(["-o".into(), "ControlPersist=300".into()]);
+    }
+    options
 }
 
 /// Where shared-connection sockets live: a private directory in the cache.

@@ -183,7 +183,7 @@ Phase 2: managing connections
 - [x] "New connection…" / edit form (`ctrl+e` in the picker): alias, host, user, port, key, jump host, colour, icon, group. Saved to `~/.ssh/config.d/ionterm` (hand-added lines kept), with one `Include` added to the top of `~/.ssh/config` (backed up once to `config.ionterm-backup`). Hosts from the user's own config can get a colour, icon and group, but their ssh settings stay read-only. Delete with a confirm click.
 
 Phase 3: files
-- [ ] SFTP side panel: browse, upload, download, rename, delete, new folder, progress
+- [x] File panel (`ctrl+shift+o` or "Files…" in the tab menu): browse over the shared connection, follow the shell's directory, type to filter, upload (system file picker), download to Downloads, rename, delete, new folder, progress with cancel, Overwrite / Rename / Skip on name conflicts. Only for connections ionterm opened.
 - [ ] Drag and drop files onto an SSH tab to upload to the shell's remote directory
 - [ ] ZMODEM (`sz`/`rz`) when the server has lrzsz, with SFTP as the fallback
 

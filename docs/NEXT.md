@@ -1,6 +1,6 @@
 # ionterm: handoff for the next session
 
-Start a fresh session in `/home/ion/development/termion` with something like:
+Start a fresh session in `/home/ion/development/ionterm` with something like:
 
 > Read `docs/NEXT.md`, then do task 1.
 
@@ -8,7 +8,7 @@ This file has what a new session needs: what exists, how the user likes things, 
 
 ## What ionterm is
 
-A GPU-rendered terminal emulator (Rust) for the user's Ionix desktop (Arch Linux + Hyprland). It's kitty-like, with Windows Terminal-style tabs and Tabby-style SSH. The folder is still called `termion`, but the app, binary and crates are `ionterm` (the name `termion` is taken by a popular crate).
+A GPU-rendered terminal emulator (Rust) for the user's Ionix desktop (Arch Linux + Hyprland). It's kitty-like, with Windows Terminal-style tabs and Tabby-style SSH. The app, binary, crates and folder are all `ionterm` (the name `termion` is taken by a popular crate).
 
 Done so far, in commit order (`git log --oneline`):
 
@@ -29,6 +29,7 @@ Done so far, in commit order (`git log --oneline`):
    - A remote bootstrap that sets up terminfo and an OSC 7 directory hook.
    - A reconnect banner, per-host colour/icon/group, and recognition of `ssh` typed in a shell.
    - A connection editor that saves to `~/.ssh/config.d/ionterm`.
+6. **SSH phase 3, task 1 (file panel):** `files/` (`remote.rs` runs commands over the shared connection and parses listings, `transfer.rs` runs downloads and uploads on threads, `panel.rs` is the widget), `app/files.rs` (the app glue: requests, conflicts, toasts, the floating transfer card) and `dialog.rs` (a generic modal with buttons, an optional input and a checkbox).
 
 ## Code map
 
@@ -90,16 +91,12 @@ Patterns to follow:
 - **SSH:** 51 hosts in `~/.ssh/config`, no Include before ionterm adds one. Key login to localhost does NOT work, and localhost's host key changed in `known_hosts`.
 - **Tools installed:** `kitten`, `chafa`, `yazi`, ImageMagick `magick`, `sftp`, `scp`. Not installed: `lrzsz`.
 
-**Driving ionterm through Hyprland** (focus doesn't matter, and the user's own windows are never touched):
+**Driving ionterm through Hyprland: always use `scripts/drive.sh`.** Claude Code runs inside the user's **kitty**, which is normally the focused window. A dispatch with an empty or stale pid (`window = "pid:"`) can land on kitty, and test keys like ctrl+d, Escape or Return then hit Claude Code itself. A previous session lost its own terminal this way. `drive.sh` only sends keys to, or kills, the window it launched, after checking that it is a live `ionterm` window and not an ancestor of the shell. Never use `pkill`/`killall`, `killactive`, or a dispatch without a verified `window =`.
 ```bash
-hyprctl dispatch 'hl.dsp.exec_cmd("/home/ion/development/termion/target/release/ionterm")'   # launch with the user's real env
-sleep 3   # give the window time to appear before looking it up
-PID=$(hyprctl clients -j | python3 -c "import json,sys; print([c['pid'] for c in json.load(sys.stdin) if c['class']=='ionterm'][-1])")
-hyprctl dispatch "hl.dsp.window.float({ action = \"enable\", window = \"pid:$PID\" })"
-hyprctl dispatch "hl.dsp.window.resize({ x = 1000, y = 600, window = \"pid:$PID\" })"
-hyprctl dispatch "hl.dsp.send_shortcut({ mods = \"CTRL SHIFT\", key = \"t\", window = \"pid:$PID\" })"   # keys go to that window only
-G=$(hyprctl clients -j | python3 -c "...print('%d,%d %dx%d' % (x, y, w, h)) for that pid...")
-grim -g "$G" shot.png        # then Read the png to look at it
+scripts/drive.sh launch "/home/ion/development/ionterm/target/release/ionterm"   # the user's real env; waits for the new window, floats it, 1200x650
+scripts/drive.sh key "CTRL SHIFT" t     # to that window only; aborts (exit 9) if it is gone
+scripts/drive.sh shot shot.png          # then Read the png to look at it
+scripts/drive.sh close
 ```
 - **Key names** are xkb names (`Return`, `BackSpace`, `period`, `Down`, …). `slash` did not type a `/`, so avoid needing one.
 - **Don't move the user's mouse.** Mouse-only features (drag, right-click menus, hover) need the user to verify; say so plainly.
@@ -133,6 +130,12 @@ They already chose:
 - system OpenSSH as the engine (not an embedded SSH library);
 - remote shell integration for the remote directory (already built: OSC 7 → `Pane::remote_cwd`).
 
+Decided on 2026-10-15:
+- **Panel only for ionterm-launched connections.** Typed `ssh` sessions (`pane.detected_ssh`) don't get the panel. Show a hint like "Reconnect via ionterm to browse files" instead.
+- **Upload picker: the XDG portal** (`org.freedesktop.portal.FileChooser` via `ashpd`/`zbus`), with a native dialog on Windows (e.g. `rfd`). No path-input field first.
+- **Download name conflicts: ask each time** with Overwrite / Rename / Skip (Rename = `file (1).txt`).
+- **Add `ionterm-get <file>` and `ionterm-put [dir]`:** the bootstrap installs these shell functions on the server. They trigger a download, or open the picker and upload, through an OSC sequence, so lrzsz isn't needed. They are part of task 3.
+
 ### Shared groundwork: a transfer engine over the existing connection
 
 Panes opened by ionterm have `pane.connection: Option<ssh::Connection>`, whose argv carries `-o ControlMaster=auto -o ControlPath=~/.cache/ionterm/ssh/%C -o ControlPersist=300` on Unix. Extra `ssh` processes using the same ControlPath and alias reuse the open connection instantly, with no second login. Windows' OpenSSH has no ControlMaster, so there every operation authenticates on its own (fine with keys or an agent).
@@ -147,7 +150,11 @@ Suggested approach (confirm with the user if unsure): run single commands over t
 - **Threading:** run everything off the UI thread. Report progress through new `UserEvent` variants (e.g. `UserEvent::Transfer(id, TransferEvent)`) and keep a transfers list on `TermWindow`. Let transfers be cancelled (kill the child).
 - **Typed `ssh`:** typed sessions (`pane.detected_ssh`) have no ControlMaster. For them, either offer the panel only for ionterm-launched connections, or run commands with the same argv (prompting for auth in a hidden PTY is messy). Ask the user which they prefer.
 
-### Task 1: SFTP side panel
+### Task 1: SFTP side panel (done)
+
+Built as described below, and tested against fake ssh: listing, follow terminal, filter, download (file and folder), the conflict dialog, new folder and delete. **The user still needs to check** the upload picker (a portal dialog would pop up on their screen) and the mouse parts (clicks, double-click, right-click row menu, hover, the toolbar buttons). Hooks for the next tasks: `App::upload(pane, remote, dir, paths)` uploads with conflict handling, so drag and drop (task 2) can call it. `ionterm-get` (task 3) needs a "download one remote path" helper, which can build an `Entry` and call `queue_downloads`.
+
+The original brief:
 
 - **Opening it:** a panel on the right of an SSH tab, toggled by a new action. Suggested key `ctrl+shift+o` (`ctrl+shift+f` is taken by `move_pane_forward`; `ctrl+shift+e` is reserved for hints). Also add "Files…" to the tab right-click menu (`menu.rs`) for SSH tabs.
 - **Building it:** treat it as a widget like `palette.rs`/`editor.rs` (`layout`/`hit`/`draw` from `ChromeItem`s), but docked rather than an overlay. It should take width from the tab's pane area in `TermWindow::relayout` (the panes get a narrower area).

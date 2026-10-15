@@ -25,6 +25,7 @@ pub struct Config {
     pub cursor: CursorConfig,
     pub tab_bar: TabBarConfig,
     pub layouts: LayoutConfig,
+    pub files: FilesConfig,
     /// Key combo → action name, merged over the defaults. `"none"` unbinds.
     pub keybindings: HashMap<String, String>,
 }
@@ -81,6 +82,28 @@ impl Default for WindowConfig {
             opacity: None,
             columns: 100,
             lines: 30,
+        }
+    }
+}
+
+/// The file panel of SSH tabs.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FilesConfig {
+    /// Panel width in columns (at most half the window).
+    pub panel_width: u16,
+    /// Where downloads go. Empty = the system's Downloads folder.
+    pub download_dir: String,
+    /// Show dotfiles when the panel opens.
+    pub show_hidden: bool,
+}
+
+impl Default for FilesConfig {
+    fn default() -> Self {
+        Self {
+            panel_width: 46,
+            download_dir: String::new(),
+            show_hidden: false,
         }
     }
 }

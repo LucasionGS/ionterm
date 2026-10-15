@@ -1,4 +1,4 @@
-//! The tab context menu: rename, duplicate, colour and close.
+//! The tab context menu: rename, duplicate, files, colour and close.
 
 use ionterm_render::{CellMetrics, ChromeItem};
 use ionterm_vt::Rgb;
@@ -11,6 +11,8 @@ use crate::theme::Theme;
 pub enum MenuCommand {
     Rename,
     Duplicate,
+    /// Opens the SSH tab's file panel.
+    Files,
     /// `None` removes the colour.
     Color(Option<Rgb>),
     Close,
@@ -24,6 +26,8 @@ pub struct Menu {
     pub x: f32,
     pub y: f32,
     pub hover: Option<MenuCommand>,
+    /// The tab is an SSH connection ionterm opened: offer "Files…".
+    pub ssh: bool,
 }
 
 pub struct MenuLayout {
@@ -74,7 +78,9 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     let colors = swatch_colors(theme);
     let swatch_row_width = px(8.0) + (colors.len() + 1) as f32 * step - px(6.0) + px(8.0);
     let width = (m.width * 24.0).max(px(220.0)).max(swatch_row_width + 2.0 * pad);
-    let rows = 6.0; // rename, duplicate, colour label, swatches, close, close others
+    // Rename, duplicate, (files), colour label, swatches, close, close others.
+    let files = f32::from(u8::from(menu.ssh));
+    let rows = 6.0 + files;
     let height = rows * row + 2.0 * pad + px(8.0);
     // Keep the menu inside the window.
     let x = menu.x.min(window.x + window.width - width - pad).max(window.x + pad);
@@ -83,16 +89,19 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
 
     let item = |i: f32, extra: f32| Rect::new(x + pad, y + pad + i * row + extra, width - 2.0 * pad, row);
     let separator = px(8.0);
-    let entries = vec![
+    let mut entries = vec![
         (MenuCommand::Rename, item(0.0, 0.0), "Rename tab"),
         (MenuCommand::Duplicate, item(1.0, 0.0), "Duplicate tab"),
-        (MenuCommand::Close, item(4.0, separator), "Close tab"),
-        (MenuCommand::CloseOthers, item(5.0, separator), "Close other tabs"),
+        (MenuCommand::Close, item(4.0 + files, separator), "Close tab"),
+        (MenuCommand::CloseOthers, item(5.0 + files, separator), "Close other tabs"),
     ];
-    // Row 2 is the "Colour" label, row 3 the swatches.
-    let color_label = item(2.0, 0.0);
+    if menu.ssh {
+        entries.push((MenuCommand::Files, item(2.0, 0.0), "Files…"));
+    }
+    // Then the "Colour" label, and the swatches.
+    let color_label = item(2.0 + files, 0.0);
 
-    let swatch_row = item(3.0, 0.0);
+    let swatch_row = item(3.0 + files, 0.0);
     let mut swatches: Vec<(MenuCommand, Rect)> = colors
         .into_iter()
         .enumerate()
@@ -270,6 +279,7 @@ mod tests {
             x: 10.0,
             y: 10.0,
             hover: None,
+            ssh: true,
         };
         let layout = layout(&menu, &theme, m, 1.0, Rect::new(0.0, 0.0, 1000.0, 800.0));
         for (command, r) in &layout.swatches {

@@ -2,7 +2,9 @@
 
 mod app;
 mod config;
+mod dialog;
 mod editor;
+mod files;
 mod input;
 mod layout;
 mod links;

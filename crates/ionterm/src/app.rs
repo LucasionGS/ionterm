@@ -1,6 +1,8 @@
 //! The winit application: owns the window and its tabs of panes, and routes
 //! events between the window system, the panes and the renderer.
 
+mod files;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +22,9 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::config::{
     CONFIG_FILE, Config, CursorShapeConfig, Decorations, FontConfig, ShowTabBar, THEME_FILE, TabBarEdge, config_dir,
 };
+use crate::dialog::{self, Answer, Dialog};
+use crate::files::FilesEvent;
+use crate::files::transfer::{TransferEvent, TransferId, Transfers};
 use crate::input::{self, Action, KeyCombo, MouseAction, MouseButton};
 use crate::layout::{self, Direction, PaneId, Rect};
 use crate::links;
@@ -54,6 +59,10 @@ pub enum UserEvent {
     Wakeup(PaneId),
     ChildExited(PaneId),
     ConfigChanged,
+    /// Background file work for a panel finished.
+    Files(FilesEvent),
+    /// An upload or download moved along or finished.
+    Transfer(TransferId, TransferEvent),
 }
 
 pub struct App {
@@ -107,6 +116,14 @@ struct TermWindow {
     ssh_extras: HashMap<String, HostExtras>,
     /// When the last animated frame was drawn; `None` when nothing moves.
     last_frame: Option<Instant>,
+    /// A modal question (delete, rename, name conflicts), while open.
+    dialog: Option<Dialog<files::Purpose>>,
+    /// Every upload and download, running or recently finished.
+    transfers: Transfers,
+    /// A short message at the bottom, and when it appeared.
+    toast: Option<(String, Instant)>,
+    /// The transfer card button under the mouse.
+    card_hover: Option<crate::files::panel::Target>,
 }
 
 struct TabDrag {
@@ -134,6 +151,8 @@ enum BarAction {
     Form(Outcome),
     Close(usize),
     Menu(MenuCommand, usize),
+    /// The dialog was answered.
+    Dialog(Answer),
 }
 
 /// Work that needs `&mut App` after a window borrow ends.
@@ -248,6 +267,10 @@ impl App {
             editor: None,
             ssh_extras: ssh::load_extras(),
             last_frame: None,
+            dialog: None,
+            transfers: Transfers::new(self.proxy.clone()),
+            toast: None,
+            card_hover: None,
         };
         w.relayout(&self.config, false);
         Ok(w)
@@ -578,12 +601,17 @@ impl App {
                         Some(Connection {
                             alias: detected.host().to_string(),
                             argv: detected.argv.clone(),
+                            managed: false,
                         }),
                         None,
                     ),
                     _ => Self::follow_pane(pane),
                 };
                 self.open_tab(tab + 1, connection, cwd);
+            }
+            MenuCommand::Files => {
+                w.select_tab(tab);
+                self.open_files(tab);
             }
             MenuCommand::Color(color) => {
                 w.tabs[tab].color = color;
@@ -639,6 +667,10 @@ impl App {
         };
         let was_active = tab_index == w.active_tab && w.tabs[tab_index].active == id;
         drop(w.tabs[tab_index].remove(id));
+        // The panel browses through this pane's connection.
+        if w.tabs[tab_index].files.as_ref().is_some_and(|p| p.pane == id) {
+            w.tabs[tab_index].files = None;
+        }
         if w.capture == Some(id) {
             w.capture = None;
         }
@@ -694,6 +726,7 @@ impl App {
                 }
             }
             Action::SshConnect => self.open_palette(None),
+            Action::ToggleFiles => self.toggle_files(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
@@ -840,6 +873,7 @@ impl App {
         let mut clipboard = None;
         let mut title_changed = false;
         let mut bell = false;
+        let mut cwd_changed = false;
         for event in events {
             match event {
                 TermEvent::Title(title) => {
@@ -848,7 +882,11 @@ impl App {
                 }
                 TermEvent::Bell => bell = true,
                 TermEvent::ClipboardStore(text) => clipboard = Some(text),
-                TermEvent::Cwd(url) => pane.report_cwd(&url, &self.local_host),
+                TermEvent::Cwd(url) => {
+                    let before = pane.remote_cwd.clone();
+                    pane.report_cwd(&url, &self.local_host);
+                    cwd_changed |= pane.remote_cwd != before;
+                }
                 TermEvent::SyncEnd => redraw |= shown,
             }
         }
@@ -866,6 +904,9 @@ impl App {
         }
         if let Some(text) = clipboard {
             self.set_clipboard(text, false);
+        }
+        if cwd_changed {
+            self.follow_cwd(tab_index, id);
         }
     }
 
@@ -896,8 +937,12 @@ impl App {
                 }
                 Some(BarAction::Close(index)) => self.close_tab(index),
                 Some(BarAction::Menu(command, tab)) => self.menu_command(tab, command),
+                Some(BarAction::Dialog(answer)) => self.dialog_answer(answer),
                 None => {}
             }
+            return FollowUp::None;
+        }
+        if self.files_click(button, pressed) {
             return FollowUp::None;
         }
         let Some(w) = &mut self.window else { return FollowUp::None };
@@ -977,8 +1022,17 @@ impl App {
         if !pressed && button == MouseButton::Left && w.tab_drag.take().is_some() {
             return Some(None);
         }
-        // The form is modal: it takes every click while open.
+        // The dialog is modal: it takes every click while open.
         let window_rect = w.window_rect();
+        if let Some(open) = &mut w.dialog {
+            if !pressed || button != MouseButton::Left {
+                return Some(None);
+            }
+            let layout = dialog::layout(open, m, scale, window_rect);
+            w.window.request_redraw();
+            return Some(open.click(dialog::hit(&layout, x as f32, y as f32)).map(BarAction::Dialog));
+        }
+        // The form is modal: it takes every click while open.
         if let Some(form) = &mut w.editor {
             if !pressed || button != MouseButton::Left {
                 return Some(None);
@@ -1075,11 +1129,13 @@ impl App {
             (MouseButton::Right, Hit::Tab(i) | Hit::Close(i)) => {
                 let bar_bottom = w.tab_bar.map_or(0.0, |b| b.y + b.height);
                 let below = w.tab_bar.is_some_and(|b| b.y == 0.0);
+                let ssh = w.tabs[i].active_pane().connection.as_ref().is_some_and(|c| c.managed);
                 w.menu = Some(Menu {
                     tab: i,
                     x: x as f32,
                     y: if below { bar_bottom } else { y as f32 },
                     hover: None,
+                    ssh,
                 });
                 w.window.request_redraw();
                 None
@@ -1101,6 +1157,23 @@ impl App {
         let m = w.renderer.cell_metrics();
         let scale = w.scale_factor as f32;
 
+        if let Some(open) = &w.dialog {
+            let layout = dialog::layout(open, m, scale, w.window_rect());
+            let hover = dialog::hit(&layout, x as f32, y as f32).flatten();
+            let icon = match hover {
+                Some(dialog::Target::Input) => CursorIcon::Text,
+                Some(_) => CursorIcon::Pointer,
+                None => CursorIcon::Default,
+            };
+            if let Some(open) = &mut w.dialog
+                && open.hover != hover
+            {
+                open.hover = hover;
+                w.window.request_redraw();
+            }
+            w.set_cursor_icon(icon);
+            return;
+        }
         if let Some(form) = &w.editor {
             let layout = editor::layout(form, m, scale, w.window_rect());
             let hover = editor::hit(&layout, x as f32, y as f32).flatten();
@@ -1166,6 +1239,16 @@ impl App {
                 }
                 // The tab follows the pointer every frame while dragged.
                 w.window.request_redraw();
+            }
+            return;
+        }
+        if w.capture.is_none() && w.files_hover(x as f32, y as f32) {
+            // Leaving the panes: no pane cell is under the mouse any more.
+            w.pointer_cell = None;
+            for pane in &mut w.tabs[w.active_tab].panes {
+                if pane.update_hover(None) {
+                    w.window.request_redraw();
+                }
             }
             return;
         }
@@ -1250,6 +1333,13 @@ impl App {
             return;
         }
         let (x, y) = (w.pointer.x, w.pointer.y);
+        let notches = match delta {
+            MouseScrollDelta::LineDelta(_, dy) => dy.signum() as isize,
+            MouseScrollDelta::PixelDelta(p) => p.y.signum() as isize,
+        };
+        if w.files_wheel(x as f32, y as f32, notches) {
+            return;
+        }
         let m = w.renderer.cell_metrics();
         let modifiers = w.modifiers;
         let Some(id) = w.pane_at(x, y).or(Some(w.active_pane().id)) else { return };
@@ -1385,8 +1475,10 @@ impl TermWindow {
 
         let padding = (config.window.padding * scale).round();
         let border = (config.layouts.border_width * scale).round();
+        files::place_panels(&mut self.tabs, area, config, m);
         for tab in &mut self.tabs {
             let bordered = tab.visible_count() > 1;
+            let area = tab.pane_area(area);
             for (id, rect) in tab.arrange(area) {
                 let inner = if bordered { inset_internal(rect, area, border) } else { rect };
                 if let Some(pane) = tab.pane_mut(id) {
@@ -1576,6 +1668,7 @@ impl TermWindow {
         if tab.visible_count() < 2 {
             return rects;
         }
+        let area = tab.pane_area(area);
         let active = theme.active_border.unwrap_or(theme.tab_bar.active_background).0;
         let inactive = theme.inactive_border.unwrap_or(theme.tab_bar.inactive_background).0;
         for (id, slot) in tab.arrange(area) {
@@ -1599,24 +1692,15 @@ impl TermWindow {
     }
 
     fn redraw(&mut self, config: &Config, theme: &Theme) {
-        let area = {
-            let size = self.window.inner_size();
-            let mut area = Rect::new(0.0, 0.0, size.width as f32, size.height as f32);
-            if let Some(bar) = self.tab_bar {
-                area.height -= bar.height;
-                if bar.y == 0.0 {
-                    area.y = bar.height;
-                }
-            }
-            area
-        };
+        let area = self.content_area();
+        let panel_focused = self.panel_focused();
         let tab = &self.tabs[self.active_tab];
         let frames: Vec<_> = tab
             .panes
             .iter()
             .filter(|p| tab.is_visible(p.id))
             .map(|p| {
-                let focused = self.focused && p.id == tab.active;
+                let focused = self.focused && p.id == tab.active && !panel_focused;
                 let (snapshot, frame) = p.frame(focused, self.blink_on);
                 (snapshot, frame, p.origin, p.area)
             })
@@ -1674,6 +1758,7 @@ impl TermWindow {
                 &mut items,
             );
         }
+        self.draw_files(theme, &mut items);
         if let Some(open) = &self.menu {
             let layout = menu::layout(open, theme, m, scale, self.window_rect());
             menu::draw(open, &layout, theme, m, scale, &mut items);
@@ -1685,6 +1770,10 @@ impl TermWindow {
         if let Some(form) = &self.editor {
             let layout = editor::layout(form, m, scale, self.window_rect());
             editor::draw(form, &layout, theme, m, scale, &mut items);
+        }
+        if let Some(open) = &self.dialog {
+            let layout = dialog::layout(open, m, scale, self.window_rect());
+            dialog::draw(open, &layout, theme, m, scale, &mut items);
         }
         // Asks the compositor for a frame callback, so a redraw requested for
         // the next animation frame arrives at the display's refresh rate.
@@ -1851,6 +1940,26 @@ impl ApplicationHandler<UserEvent> for App {
             } => {
                 let blink = self.blink_interval();
                 let Some(w) = &mut self.window else { return };
+                if let Some(open) = &mut w.dialog {
+                    if event.state != ElementState::Pressed {
+                        return;
+                    }
+                    let mods = w.modifiers;
+                    let paste = mods.control_key()
+                        && matches!(KeyCombo::from_event(&event, mods), Some(KeyCombo { key, .. }) if key == "v");
+                    if paste {
+                        let text = self.get_clipboard(false);
+                        if let (Some(text), Some(open)) = (text, self.window.as_mut().and_then(|w| w.dialog.as_mut())) {
+                            open.paste(&text);
+                        }
+                    } else if let Some(answer) = open.key(&event.logical_key, event.text.as_deref(), mods.control_key()) {
+                        return self.dialog_answer(answer);
+                    }
+                    if let Some(w) = &self.window {
+                        w.window.request_redraw();
+                    }
+                    return;
+                }
                 if let Some(form) = &mut w.editor {
                     if event.state != ElementState::Pressed {
                         return;
@@ -1901,6 +2010,12 @@ impl ApplicationHandler<UserEvent> for App {
                     let action = *action;
                     return self.perform(action);
                 }
+                if w.panel_focused() {
+                    if event.state == ElementState::Pressed {
+                        self.files_key(&event);
+                    }
+                    return;
+                }
                 let pane = w.active_pane();
                 if pane.disconnected.is_some() {
                     if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Enter) {
@@ -1950,6 +2065,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wakeup(id) => self.handle_wakeup(id),
             UserEvent::ChildExited(id) => self.child_exited(id),
             UserEvent::ConfigChanged => self.reload_at = Some(Instant::now() + RELOAD_DEBOUNCE),
+            UserEvent::Files(event) => self.files_event(event),
+            UserEvent::Transfer(id, event) => self.transfer_event(id, event),
         }
     }
 
@@ -1964,7 +2081,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.reload_config();
         }
         let blink = self.blink_interval();
-        let mut wake = self.reload_at;
+        let mut wake = [self.reload_at, self.expire_files(now)].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

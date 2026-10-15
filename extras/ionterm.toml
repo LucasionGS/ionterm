@@ -33,6 +33,11 @@ max_title_length = 30                # Powerline styles only
 enabled = ["splits", "tall", "fat", "grid", "stack"]   # next_layout cycles these; the first is the default
 border_width = 2                     # logical pixels between panes
 
+[files]
+panel_width = 46                     # columns, at most half the window
+download_dir = ""                    # empty = the system's Downloads folder
+show_hidden = false                  # dotfiles in the SSH file panel (ctrl+h toggles)
+
 [cursor]
 shape = "beam"                       # block | beam | underline
 blink_interval = 0.5                 # seconds, 0 = no blinking

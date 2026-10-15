@@ -496,6 +496,8 @@ pub enum Action {
     RenameTab,
     /// Opens the SSH connection picker.
     SshConnect,
+    /// Opens, focuses or closes an SSH tab's file panel.
+    ToggleFiles,
     // Panes
     /// Splits the active pane along its longer side.
     NewSplit,
@@ -550,6 +552,7 @@ impl Action {
             "move_tab_backward" => Self::MoveTabBackward,
             "rename_tab" | "set_tab_title" => Self::RenameTab,
             "ssh_connect" | "connect_ssh" => Self::SshConnect,
+            "toggle_files" | "files" | "sftp" => Self::ToggleFiles,
             "new_split" | "new_window" => Self::NewSplit,
             "split_right" => Self::SplitRight,
             "split_down" => Self::SplitDown,
@@ -598,6 +601,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+comma", "move_tab_backward"),
     ("ctrl+shift+alt+t", "rename_tab"),
     ("ctrl+shift+s", "ssh_connect"),
+    ("ctrl+shift+o", "toggle_files"),
     ("alt+1", "goto_tab 1"),
     ("alt+2", "goto_tab 2"),
     ("alt+3", "goto_tab 3"),

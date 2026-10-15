@@ -2,6 +2,7 @@
 
 use ionterm_vt::Rgb;
 
+use crate::files::panel::FilePanel;
 use crate::layout::{self, Direction, Layout, PaneId, Rect, SplitNode};
 use crate::pane::Pane;
 
@@ -20,6 +21,8 @@ pub struct Tab {
     pub custom_title: Option<String>,
     /// Set from the tab's menu.
     pub color: Option<Rgb>,
+    /// The file panel docked on the right, while open.
+    pub files: Option<FilePanel>,
 }
 
 impl Tab {
@@ -33,6 +36,7 @@ impl Tab {
             zoomed: false,
             custom_title: None,
             color: None,
+            files: None,
         }
     }
 
@@ -55,6 +59,14 @@ impl Tab {
 
     fn effective_layout(&self) -> Layout {
         if self.zoomed { Layout::Stack } else { self.layout }
+    }
+
+    /// The part of `area` left for panes beside the file panel.
+    pub fn pane_area(&self, area: Rect) -> Rect {
+        match &self.files {
+            Some(panel) => Rect::new(area.x, area.y, (area.width - panel.rect.width).max(1.0), area.height),
+            None => area,
+        }
     }
 
     /// Where every pane goes within `area`.
