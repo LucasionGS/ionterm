@@ -605,6 +605,26 @@ impl App {
         let Some(w) = &mut self.window else { return };
         let pane = w.active_pane();
         let mode = pane.lock().mode();
+        // Without bracketed paste, every line runs as soon as it's pasted.
+        let lines = text.trim_end_matches(['\r', '\n']).lines().count();
+        if lines > 1 && !mode.contains(TermMode::BRACKETED_PASTE) && self.config.terminal.confirm_multiline_paste {
+            let pane = pane.id;
+            w.dialog = Some(Dialog::new(
+                format!("Paste {lines} lines?"),
+                "The program here runs each line as it arrives, so this pastes and runs them all at once.",
+                vec![
+                    dialog::Button::new("Paste", 'p').danger(),
+                    dialog::Button::new("As one line", 'o'),
+                    dialog::Button::new("Cancel", 'c'),
+                ],
+                files::Purpose::Paste { pane, text },
+            ));
+            if let Some(d) = &mut w.dialog {
+                d.default = 2;
+            }
+            w.window.request_redraw();
+            return;
+        }
         pane.write(&input::encode_paste(&text, mode));
         pane.lock().scroll_to_bottom();
     }

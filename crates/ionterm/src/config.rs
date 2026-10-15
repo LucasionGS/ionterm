@@ -219,6 +219,9 @@ pub struct TerminalConfig {
     /// for jumping between prompts, selecting a command's output and
     /// failed-command marks. Only the login shell; fish 4 does it itself.
     pub shell_integration: bool,
+    /// Ask before pasting several lines into a program that would run each
+    /// one as it arrives (no bracketed paste).
+    pub confirm_multiline_paste: bool,
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
@@ -236,6 +239,7 @@ impl Default for TerminalConfig {
             wheel_scroll_lines: 3,
             advertise_sixel: false,
             shell_integration: true,
+            confirm_multiline_paste: true,
             command: Vec::new(),
             startup_ssh: None,
         }

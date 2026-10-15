@@ -34,6 +34,8 @@ pub enum Purpose {
     Rename { pane: PaneId, dir: String, from: String },
     NewFolder { pane: PaneId, dir: String },
     Conflict(Conflicts),
+    /// Multi-line text waiting to be pasted into a pane.
+    Paste { pane: PaneId, text: String },
 }
 
 /// Transfers whose destination name is taken, asked about one at a time.
@@ -795,6 +797,18 @@ impl App {
                 let path = remote::join(dir, &name);
                 let message = format!("Created {name}");
                 files::change(proxy, pane, Some(name), move || remote.mkdir(&path).map(|()| message));
+            }
+            Purpose::Paste { pane, text } => {
+                let Some(p) = w.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == pane) else { return };
+                let text = match answer.button {
+                    Some(0) => text,
+                    // Joined into one line, nothing runs by itself.
+                    Some(1) => text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" "),
+                    _ => return,
+                };
+                let mode = p.lock().mode();
+                p.write(&crate::input::encode_paste(&text, mode));
+                p.lock().scroll_to_bottom();
             }
             Purpose::Conflict(mut queue) => {
                 let choice = match answer.button {
