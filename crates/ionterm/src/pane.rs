@@ -77,6 +77,19 @@ pub struct Pane {
     process_checked: Option<Instant>,
     /// ZMODEM state shared with the PTY reader.
     pub zmodem: Arc<zmodem::Shared>,
+    /// Progress shown in the tab, while there is some.
+    pub progress: Option<PaneProgress>,
+}
+
+/// A pane's progress: reported by the program (OSC 9;4), or read from a
+/// percentage on a line it keeps rewriting.
+#[derive(Clone, Copy, Debug)]
+pub struct PaneProgress {
+    pub shown: crate::tabbar::TabProgress,
+    /// Read from the output rather than reported: it lapses when the
+    /// percentage stops changing for a while.
+    pub guessed: bool,
+    pub updated: Instant,
 }
 
 impl Pane {
@@ -136,6 +149,7 @@ impl Pane {
             process: None,
             process_checked: None,
             zmodem,
+            progress: None,
         })
     }
 

@@ -32,6 +32,7 @@ Done so far, in commit order (`git log --oneline`):
 6. **SSH phase 3, task 1 (file panel):** `files/` (`remote.rs` runs commands over the shared connection and parses listings, `transfer.rs` runs downloads and uploads on threads, `panel.rs` is the widget), `app/files.rs` (the app glue: requests, conflicts, toasts, the floating transfer card) and `dialog.rs` (a generic modal with buttons, an optional input and a checkbox).
 7. **SSH phase 3, task 2 (drag and drop):** `dnd/` (`wayland.rs` binds our own `wl_data_device` on winit's display, on its own queue and thread; `App::exiting` must drop the listener before winit disconnects) and `app/drag.rs` (drop targets, the highlight while dragging, upload or paste).
 8. **SSH phase 3, task 3 (rsync, ZMODEM, `ionterm-get`/`ionterm-put`):** `files/rsync.rs`, `zmodem/` (`frame.rs` wire format, `mod.rs` detector and session) wired into `pty.rs`'s reader, `app/rzsz.rs`, and OSC 5379 in `ionterm-vt`. See "SSH phase 3: files" below.
+9. **Shell integration (v0.3b):** OSC 133 marks on rows (`Row::prompt`, `output`, `status`; carried through reflow) and the queries on `Term` (`prompt_lines`, `command_output_at`, `last_command_output`, `failed_commands_in_view`, `click_goes_to_shell`, `progress`, `progress_hint`). `shell.rs` injects `extras/shell-integration/ionterm.{bash,zsh,fish}` into the local login shell (bash `--rcfile`, zsh `ZDOTDIR`, fish 3 `-C`; fish 4 needs nothing), and `ssh/bootstrap.rs` embeds the same files. `app/integration.rs` has the prompt jumps, output copy/select, failed marks and the tab progress bars (`tabbar::draw_progress`).
 
 ## Code map
 
@@ -59,8 +60,10 @@ crates/ionterm/          the app
   zmodem/                frame.rs (headers, subpackets, CRCs, decoder), mod.rs (Detector, Session: sz → us, us → rz)
   dnd/                   drops: mod.rs (uri-list, shell quoting), wayland.rs (own wl_data_device; winit 0.30 has none)
   dialog.rs              generic modal: buttons, optional input and checkbox
-  app/                   files.rs (panel requests, conflicts, toasts, transfer card), drag.rs (drop targets), rzsz.rs (ZMODEM glue)
+  app/                   files.rs (panel requests, conflicts, toasts, transfer card), drag.rs (drop targets), rzsz.rs (ZMODEM glue),
+                         integration.rs (prompt jumps, output copy/select, failed marks, tab progress)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
+  shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
   config.rs / theme.rs / links.rs
 extras/                  terminfo source, Ionix styler theme files + install functions, example ionterm.toml
 scripts/keytest.sh       real-keystroke test of the keyboard protocol (Hyprland)
@@ -116,7 +119,7 @@ scripts/drive.sh close
   DISPLAY=:1 xdotool type -- 'sz huge.bin'; DISPLAY=:1 xdotool key Return
   gamescopectl screenshot shot.png
   ```
-  Put the ionterm command in a launcher script rather than nesting quotes. Mouse and drag-and-drop still need the user.
+  Put the ionterm command in a launcher script rather than nesting quotes. **Mouse tests work there too**, since gamescope is its own X server and the user's pointer is never involved: `W=$(DISPLAY=:1 xdotool search --class ionterm)`, then `DISPLAY=:1 xdotool mousemove --window $W <x> <y> click 1` (window pixels; `keydown ctrl+shift click 3 keyup ctrl+shift` for modifiers). The 916×616 window is scaled into the 1200×650 screenshot (×1.055, offset 116 px). Drag and drop from a file manager still needs the user. Use a scratch `HOME`/`XDG_DATA_HOME` so commands don't land in the user's fish history.
 - **Don't move the user's mouse.** Mouse-only features (drag, right-click menus, hover) need the user to verify; say so plainly.
 - **Shell:** launching via `hl.dsp.exec_cmd` gives the user's real environment (fish). Launching from the Bash tool gives bash (`$SHELL` differs), so use `-e fish` there.
 
@@ -159,7 +162,6 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
 ## Next tasks (from docs/PLAN.md)
 
 - **v0.3b power features:**
-  - Shell integration: jump between prompts (OSC 133 marks already tracked in `Row::prompt`), select a command's output.
   - Hints mode (`ctrl+shift+e`): pick URLs, paths and hashes with the keyboard.
   - Scrollback search.
   - Background image; cursor trail.

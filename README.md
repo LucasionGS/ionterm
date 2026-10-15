@@ -21,10 +21,12 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **SSH, first class**: `ctrl+shift+s` lists every host in your `~/.ssh/config`. Connect in a tab or split, add or edit connections in a form (saved where plain `ssh` finds them too), give hosts a tab colour and icon, and get a "press Enter to reconnect" banner when a connection drops. ionterm sets up its terminfo on the server so you never see "unknown terminal".
 - **Remote files**: `ctrl+shift+o` opens a file panel beside an SSH tab. Browse the server, follow your shell as you `cd`, download, upload, rename and delete, with progress bars and no second login. Or just drag files from your file manager onto the SSH tab and they land in the directory your shell is in. Transfers use rsync when the server has it (so a dropped connection resumes instead of starting over), and plain ssh when it doesn't.
 - **Transfers from the shell**: type `ionterm-get report.pdf` on the server and it lands in your Downloads; `ionterm-put` asks which files to send. Old habits work too: `sz` and `rz` are handled right in the terminal, no lrzsz needed on your side.
+- **Shell integration**: ctrl+shift+z and ctrl+shift+x hop between your prompts, ctrl+shift+g copies the last command's output, and ctrl+shift+right-click selects any command's output. Failed commands get a little red mark, and clicking in your command line moves the cursor there. Works in bash, zsh and fish, locally and over SSH, without touching your dotfiles.
+- **Progress in the tab**: downloads, builds and updates fill a bar along the bottom of their tab, whether the program reports its progress or just prints `45%`.
 - **Splits and layouts**: split any pane, or let kitty-style layouts (tall, fat, grid, stack) arrange them. New tabs and splits open in the directory you're in.
 - **SSH-friendly**: `TERM` falls back to `xterm-256color` whenever the remote end might not know `xterm-ionterm`, so no more "unknown terminal".
 
-Coming up: shell integration, hints mode and scrollback search. See [the plan](docs/PLAN.md).
+Coming up: hints mode and scrollback search. See [the plan](docs/PLAN.md).
 
 ## Configuration
 

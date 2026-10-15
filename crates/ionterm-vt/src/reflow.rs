@@ -8,12 +8,30 @@ use crate::cell::{Cell, Flags, Row};
 use crate::color::Color;
 use crate::graphics::Anchor;
 
+/// Shell integration marks, which belong to a line's first row.
+#[derive(Clone, Copy, Default)]
+struct Marks {
+    prompt: bool,
+    output: bool,
+    status: Option<i32>,
+}
+
+impl Marks {
+    fn of(row: &Row) -> Self {
+        Self {
+            prompt: row.prompt,
+            output: row.output,
+            status: row.status,
+        }
+    }
+}
+
 /// A line as it was before wrapping: its cells and what was attached to them.
 struct LogicalLine {
     cells: Vec<Cell>,
     /// The cursor's offset into `cells`, if it's on this line.
     cursor: Option<usize>,
-    prompt: bool,
+    marks: Marks,
     /// Image anchors by their offset into `cells`.
     anchors: Vec<(usize, Anchor)>,
 }
@@ -33,12 +51,13 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
     // is and which lines start a prompt.
     let mut lines: Vec<LogicalLine> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
-    let mut prompt = false;
+    let mut marks = Marks::default();
     // Image anchors by their offset into the logical line.
     let mut anchors: Vec<(usize, Anchor)> = Vec::new();
     let mut cursor_offset = None;
     let mut cursor_line = 0;
     for (index, row) in rows.into_iter().enumerate() {
+        let row_marks = Marks::of(&row);
         let mut cells = row.cells;
         if row.wrapped && cells.last().is_some_and(is_wide_padding) {
             cells.pop();
@@ -48,7 +67,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             cursor_line = lines.len();
         }
         if current.is_empty() {
-            prompt = row.prompt;
+            marks = row_marks;
         }
         anchors.extend(row.anchors.iter().map(|a| (current.len() + a.col, *a)));
         current.extend(cells);
@@ -58,7 +77,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             lines.push(LogicalLine {
                 cells: std::mem::take(&mut current),
                 cursor: cursor_offset.take(),
-                prompt,
+                marks,
                 anchors: std::mem::take(&mut anchors),
             });
         }
@@ -69,7 +88,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
         lines.push(LogicalLine {
             cells: current,
             cursor: cursor_offset,
-            prompt,
+            marks,
             anchors,
         });
     }
@@ -87,7 +106,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
         let LogicalLine {
             cells,
             cursor: cursor_offset,
-            prompt,
+            marks,
             anchors: mut line_anchors,
         } = line;
         let len = cells.len();
@@ -104,10 +123,13 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
                     // The wide character goes to the next row as a whole.
                     row.push(wide_padding());
                 }
+                let first = out.len() == first_row;
                 out.push(Row {
                     cells: std::mem::take(&mut row),
                     wrapped: true,
-                    prompt: prompt && out.len() == first_row,
+                    prompt: marks.prompt && first,
+                    output: marks.output && first,
+                    status: marks.status.filter(|_| first),
                     anchors: std::mem::take(&mut row_anchors),
                 });
             }
@@ -130,10 +152,13 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             new_cursor = (out.len(), (row.len() + offset - len).min(cols - 1));
         }
         row.resize(cols, Cell::blank(Color::Default));
+        let first = out.len() == first_row;
         out.push(Row {
             cells: row,
             wrapped: false,
-            prompt: prompt && out.len() == first_row,
+            prompt: marks.prompt && first,
+            output: marks.output && first,
+            status: marks.status.filter(|_| first),
             anchors: row_anchors,
         });
     }
@@ -188,6 +213,8 @@ mod tests {
             cells,
             wrapped,
             prompt: false,
+            output: false,
+            status: None,
             anchors: Vec::new(),
         }
     }
@@ -222,6 +249,8 @@ mod tests {
                 cells,
                 wrapped: false,
                 prompt: false,
+                output: false,
+                status: None,
                 anchors: Vec::new(),
             }],
             (0, 3),

@@ -21,6 +21,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::app::UserEvent;
 use crate::config::TerminalConfig;
 use crate::layout::PaneId;
+use crate::shell::{self, Setup};
 use crate::zmodem;
 
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -59,18 +60,37 @@ impl Pty {
         let pair = native_pty_system().openpty(size).context("opening a PTY")?;
 
         // An explicit command (an ssh connection), `ionterm -e`, or the shell.
-        let words = match argv.or(Some(config.command.as_slice())).and_then(|a| a.split_first()) {
+        let explicit = argv.or(Some(config.command.as_slice())).and_then(|a| a.split_first());
+        let words = match explicit {
             Some((program, args)) => Some((program.clone(), args.to_vec())),
             None => shell_words(&config.shell),
         };
-        let mut command = match words {
-            Some((program, args)) => {
+        // The login shell (not a configured command line with its own
+        // arguments) gets the shell integration.
+        let integration = match &words {
+            _ if !config.shell_integration || explicit.is_some() => None,
+            Some((program, args)) if args.is_empty() => shell::setup(program),
+            Some(_) => None,
+            None => std::env::var("SHELL").ok().and_then(|shell| shell::setup(&shell)),
+        };
+        let mut command = match (words, &integration) {
+            (_, Some(Setup::Command(argv))) => {
+                let mut command = CommandBuilder::new(&argv[0]);
+                command.args(&argv[1..]);
+                command
+            }
+            (Some((program, args)), _) => {
                 let mut command = CommandBuilder::new(program);
                 command.args(args);
                 command
             }
-            None => CommandBuilder::new_default_prog(),
+            (None, _) => CommandBuilder::new_default_prog(),
         };
+        if let Some(Setup::Env(vars)) = &integration {
+            for (key, value) in vars {
+                command.env(key, value);
+            }
+        }
         if let Some(dir) = cwd.filter(|dir| dir.is_dir()).map(Path::to_path_buf).or_else(dirs::home_dir) {
             command.cwd(dir);
         }

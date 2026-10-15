@@ -528,6 +528,12 @@ pub enum Action {
     ScrollPageDown,
     ScrollHome,
     ScrollEnd,
+    /// Scrolls to the prompt above the top of the view (shell integration).
+    PreviousPrompt,
+    /// Scrolls to the prompt below the top of the view, or the bottom.
+    NextPrompt,
+    /// Copies the last command's output to the clipboard.
+    CopyLastOutput,
     IncreaseFontSize,
     DecreaseFontSize,
     ResetFontSize,
@@ -542,6 +548,14 @@ impl Action {
         let name = words.next()?;
         if name == "goto_tab" {
             return words.next()?.parse().ok().filter(|&n| n > 0).map(Self::GotoTab);
+        }
+        // kitty's spelling: `scroll_to_prompt -1` / `scroll_to_prompt 1`.
+        if name == "scroll_to_prompt" {
+            return match words.next()?.parse::<i32>().ok()? {
+                n if n < 0 => Some(Self::PreviousPrompt),
+                n if n > 0 => Some(Self::NextPrompt),
+                _ => None,
+            };
         }
         Some(match name {
             "new_tab" => Self::NewTab,
@@ -580,6 +594,9 @@ impl Action {
             "scroll_page_down" => Self::ScrollPageDown,
             "scroll_home" => Self::ScrollHome,
             "scroll_end" => Self::ScrollEnd,
+            "previous_prompt" => Self::PreviousPrompt,
+            "next_prompt" => Self::NextPrompt,
+            "copy_last_command_output" | "copy_last_output" | "show_last_command_output" => Self::CopyLastOutput,
             "increase_font_size" => Self::IncreaseFontSize,
             "decrease_font_size" => Self::DecreaseFontSize,
             "reset_font_size" => Self::ResetFontSize,
@@ -627,6 +644,9 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("shift+page_down", "scroll_page_down"),
     ("ctrl+shift+home", "scroll_home"),
     ("ctrl+shift+end", "scroll_end"),
+    ("ctrl+shift+z", "previous_prompt"),
+    ("ctrl+shift+x", "next_prompt"),
+    ("ctrl+shift+g", "copy_last_command_output"),
     ("ctrl+shift+equal", "increase_font_size"),
     ("ctrl+shift+plus", "increase_font_size"),
     ("ctrl+shift+minus", "decrease_font_size"),

@@ -13,6 +13,7 @@ mod menu;
 mod palette;
 mod pane;
 mod pty;
+mod shell;
 mod ssh;
 mod tab;
 mod tabbar;

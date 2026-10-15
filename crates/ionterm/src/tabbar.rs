@@ -14,6 +14,52 @@ pub struct TabInfo {
     pub icon: char,
     pub color: Option<Rgb>,
     pub active: bool,
+    pub progress: Option<TabProgress>,
+}
+
+/// A progress bar along the bottom of a tab.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabProgress {
+    /// 0 to 1; `None` when the program can't tell (a moving stripe).
+    pub fraction: Option<f32>,
+    pub state: ionterm_vt::ProgressState,
+}
+
+/// Draws a tab's progress bar inside `rect`, along its bottom edge.
+/// `phase` (0 to 1) moves the stripe of an indeterminate one.
+pub fn draw_progress(progress: TabProgress, rect: Rect, theme: &Theme, scale: f32, phase: f32, out: &mut Vec<ChromeItem>) {
+    use ionterm_vt::ProgressState;
+    let height = (2.5 * scale).round().max(2.0);
+    let inset = (8.0 * scale).round();
+    let (x, width) = (rect.x + inset, (rect.width - 2.0 * inset).max(0.0));
+    let y = rect.y + rect.height - height - (2.0 * scale).round();
+    let palette = theme.palette();
+    let color = match progress.state {
+        ProgressState::Error => palette.colors[1],
+        ProgressState::Paused => palette.colors[3],
+        _ => theme.cursor.0,
+    };
+    out.push(ChromeItem::Rect {
+        rect: [x, y, width, height],
+        color: mix(theme.background.0, theme.foreground.0, 0.2),
+        alpha: 1.0,
+    });
+    let (start, length) = match progress.fraction {
+        Some(fraction) => (0.0, width * fraction.clamp(0.0, 1.0)),
+        None => {
+            // A third of the track, sliding through and off the end.
+            let stripe = width / 3.0;
+            let start = (width + stripe) * phase - stripe;
+            (start.max(0.0), (start + stripe).min(width) - start.max(0.0))
+        }
+    };
+    if length > 0.0 {
+        out.push(ChromeItem::Rect {
+            rect: [x + start, y, length, height],
+            color,
+            alpha: 1.0,
+        });
+    }
 }
 
 /// What's under the mouse in the tab bar.
@@ -227,11 +273,12 @@ pub fn draw(
     m: CellMetrics,
     scale: f32,
     max_title: usize,
+    phase: f32,
     out: &mut Vec<ChromeItem>,
 ) {
     match style {
-        TabBarStyleConfig::Tabs => draw_tabs(layout, tabs, hover, rename, motion, theme, opacity, m, scale, out),
-        _ => draw_powerline(style, layout, tabs, rename, motion, theme, m, max_title, out),
+        TabBarStyleConfig::Tabs => draw_tabs(layout, tabs, hover, rename, motion, theme, opacity, m, scale, phase, out),
+        _ => draw_powerline(style, layout, tabs, rename, motion, theme, m, scale, max_title, phase, out),
     }
 }
 
@@ -246,6 +293,7 @@ fn draw_tabs(
     opacity: f32,
     m: CellMetrics,
     scale: f32,
+    phase: f32,
     out: &mut Vec<ChromeItem>,
 ) {
     let background = theme.background.0;
@@ -356,6 +404,9 @@ fn draw_tabs(
                 bold: false,
             });
         }
+        if let Some(progress) = tab.progress {
+            draw_progress(progress, r, theme, scale, phase, out);
+        }
     }
 
     if let Some(button) = layout.new_tab {
@@ -407,7 +458,9 @@ fn draw_powerline(
     motion: &Motion,
     theme: &Theme,
     m: CellMetrics,
+    scale: f32,
     max_title: usize,
+    phase: f32,
     out: &mut Vec<ChromeItem>,
 ) {
     let colors = &theme.tab_bar;
@@ -453,6 +506,9 @@ fn draw_powerline(
             color: fg,
             bold: tab.active,
         });
+        if let Some(progress) = tab.progress {
+            draw_progress(progress, Rect::new(r.x, r.y, r.width - m.width, r.height + (2.0 * scale).round()), theme, scale, phase, out);
+        }
         let next_bg = tabs.get(i + 1).map_or(colors.background.0, tab_bg);
         let sep_x = r.x + r.width - m.width;
         out.push(ChromeItem::Rect {

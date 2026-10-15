@@ -76,6 +76,22 @@ pub struct CursorStyle {
     pub blinking: bool,
 }
 
+/// Progress a program reports for itself (OSC 9;4, as in Windows Terminal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub state: ProgressState,
+    /// 0 to 100; `None` while indeterminate.
+    pub percent: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressState {
+    Normal,
+    Error,
+    Paused,
+    Indeterminate,
+}
+
 /// Something the app has to act on that isn't part of the grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TermEvent {
@@ -90,6 +106,10 @@ pub enum TermEvent {
     /// OSC 5379, ionterm's own: the remote shell's `ionterm-get` or
     /// `ionterm-put` asks for a download or an upload.
     FileRequest(FileRequest),
+    /// OSC 9;4 set or cleared the reported progress.
+    Progress(Option<Progress>),
+    /// The shell shows its prompt again (OSC 133;A): any command is over.
+    Prompt,
 }
 
 /// What `ionterm-get` and `ionterm-put` ask for, with absolute remote paths.
@@ -280,6 +300,19 @@ pub struct Term {
     /// Between a prompt mark (OSC 133;A) and the command starting (133;C):
     /// the shell is showing its prompt and will redraw it after a resize.
     at_prompt: bool,
+    /// Between a prompt mark and the command starting, whether or not the
+    /// shell redraws its prompt.
+    editing: bool,
+    /// The shell takes mouse clicks on its command line (OSC 133;A with
+    /// `click_events=1`): they move its cursor.
+    click_events: bool,
+    /// A command started (OSC 133;C) and hasn't finished (133;D).
+    command_running: bool,
+    /// The row a carriage return went back to, while it's rewritten in
+    /// place (how curl or pacman draw progress); a line feed ends that.
+    rewritten_row: Option<usize>,
+    /// From OSC 9;4.
+    progress: Option<Progress>,
     graphics: Graphics,
     /// Whether the device attributes reply announces sixel support.
     advertise_sixel: bool,
@@ -330,6 +363,11 @@ impl Term {
             cursor_style: None,
             keyboard_stacks: [Vec::new(), Vec::new()],
             at_prompt: false,
+            editing: false,
+            click_events: false,
+            command_running: false,
+            rewritten_row: None,
+            progress: None,
             graphics: Graphics::default(),
             advertise_sixel: false,
             hyperlinks: Vec::new(),
@@ -510,6 +548,106 @@ impl Term {
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_display(-(self.display_offset as isize));
     }
+
+    //#region Shell integration
+
+    /// Scrolls so an absolute line is at the top (or as near as it gets).
+    pub fn scroll_to_line(&mut self, absolute: usize) {
+        let offset = self.scrollback.len().saturating_sub(absolute);
+        self.scroll_display(offset as isize - self.display_offset as isize);
+    }
+
+    /// Absolute lines where a shell prompt starts (OSC 133;A), oldest first.
+    pub fn prompt_lines(&self) -> Vec<usize> {
+        (0..self.total_lines()).filter(|&i| self.line(i).is_some_and(|r| r.prompt)).collect()
+    }
+
+    fn total_lines(&self) -> usize {
+        self.scrollback.len() + self.grid.len()
+    }
+
+    /// The output of the command around an absolute line, as the first and
+    /// last line of it: from where the command started writing (133;C) to
+    /// the line before the next prompt. `None` without marks or output.
+    pub fn command_output_at(&self, absolute: usize) -> Option<(usize, usize)> {
+        let marked = |i: usize, f: fn(&Row) -> bool| self.line(i).is_some_and(f);
+        // The prompt this line belongs to, and the next one.
+        let prompt = (0..=absolute.min(self.total_lines().checked_sub(1)?)).rev().find(|&i| marked(i, |r| r.prompt))?;
+        let next = (prompt + 1..self.total_lines()).find(|&i| marked(i, |r| r.prompt));
+        let limit = next.unwrap_or(self.total_lines());
+        let start = (prompt + 1..limit).find(|&i| marked(i, |r| r.output))?;
+        // A running command's output ends at the cursor.
+        let mut end = match next {
+            Some(next) => next - 1,
+            None => self.scrollback.len() + self.cursor.row,
+        };
+        let blank = |i: usize| self.line(i).is_none_or(|r| r.cells.iter().all(|c| c.c == ' ' && c.extra.is_none()));
+        while end > start && blank(end) {
+            end -= 1;
+        }
+        (end >= start && !(end == start && blank(start))).then_some((start, end))
+    }
+
+    /// The output of the last command that wrote any, finished or running.
+    pub fn last_command_output(&self) -> Option<(usize, usize)> {
+        self.prompt_lines().into_iter().rev().find_map(|p| self.command_output_at(p))
+    }
+
+    /// Viewport rows whose prompt's command failed, with its exit status.
+    pub fn failed_commands_in_view(&self) -> Vec<(usize, i32)> {
+        (0..self.rows)
+            .filter_map(|row| {
+                let status = self.line(self.viewport_to_absolute(row))?.status?;
+                (status != 0).then_some((row, status))
+            })
+            .collect()
+    }
+
+    /// Whether a left click at a viewport row goes to the shell (to move
+    /// its cursor) rather than starting a selection: the shell asked for
+    /// clicks, and it's on the command line being edited.
+    pub fn click_goes_to_shell(&self, row: usize) -> bool {
+        if !self.click_events || !self.editing || self.display_offset != 0 || self.mode.contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        let Some(prompt) = (0..=self.cursor.row).rev().find(|&r| self.grid[r].prompt) else { return false };
+        // The command line may go on below the cursor.
+        let mut end = self.cursor.row;
+        while end + 1 < self.grid.len() && self.grid[end].wrapped {
+            end += 1;
+        }
+        (prompt..=end).contains(&row)
+    }
+
+    /// The progress a program reported (OSC 9;4).
+    pub fn progress(&self) -> Option<Progress> {
+        self.progress
+    }
+
+    /// A percentage on the line a running command keeps rewriting in place
+    /// (how curl, wget and pacman draw progress), as 0 to 100. Prompts are
+    /// left out: they're redrawn the same way and may show a battery level.
+    pub fn progress_hint(&self) -> Option<f32> {
+        if self.editing || self.at_prompt || self.mode.contains(TermMode::ALT_SCREEN) {
+            return None;
+        }
+        let row = self.rewritten_row.filter(|&r| r == self.cursor.row)?;
+        // What's after the cursor is left over from a longer line before.
+        let written = &self.grid[row].cells[..self.cursor.col.min(self.cols)];
+        last_percentage(&written.iter().map(|c| c.c).collect::<String>())
+    }
+
+    /// Records an exit status on the prompt the finished command came from.
+    fn mark_status(&mut self, status: i32) {
+        if let Some(row) = (0..=self.cursor.row).rev().find(|&r| self.grid[r].prompt) {
+            self.grid[row].status = Some(status);
+        } else if let Some(row) = self.scrollback.iter_mut().rev().find(|r| r.prompt) {
+            row.status = Some(status);
+        }
+        self.dirty = true;
+    }
+
+    //#endregion
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let cols = cols.max(2);
@@ -1536,6 +1674,7 @@ impl Perform for Term {
                 self.goto_col(next.unwrap_or(self.cols - 1));
             }
             0x0a..=0x0c => {
+                self.rewritten_row = None;
                 self.linefeed();
                 if self.mode.contains(TermMode::LINEFEED_NEWLINE) {
                     self.cursor.col = 0;
@@ -1544,6 +1683,7 @@ impl Perform for Term {
             0x0d => {
                 self.cursor.col = 0;
                 self.cursor.wrap_pending = false;
+                self.rewritten_row = Some(self.cursor.row);
             }
             0x0e => self.active_charset = 1,
             0x0f => self.active_charset = 0,
@@ -1642,17 +1782,71 @@ impl Perform for Term {
                 };
             }
             "133" => match params.get(1).map(|p| p.first().copied()) {
-                // Prompt start. `redraw=0` means the shell won't redraw it on resize.
+                // Prompt start. `redraw=0` means the shell won't redraw it on
+                // resize; `click_events=1` that it takes clicks on its line.
                 Some(Some(b'A')) => {
+                    // A secondary prompt (`k=s`, PS2) continues the command line.
+                    if params[2..].iter().any(|p| *p == b"k=s") {
+                        return;
+                    }
                     let redraws = !params[2..].iter().any(|p| *p == b"redraw=0");
                     self.at_prompt = redraws;
+                    self.editing = true;
+                    self.click_events = params[2..].iter().any(|p| *p == b"click_events=1");
+                    self.command_running = false;
                     let row = self.cursor.row;
                     self.grid[row].prompt = true;
+                    self.events.push(TermEvent::Prompt);
                 }
-                // Command started (C) or finished (D).
-                Some(Some(b'C' | b'D')) => self.at_prompt = false,
+                // Command started: its output begins here.
+                Some(Some(b'C')) => {
+                    self.at_prompt = false;
+                    self.editing = false;
+                    self.command_running = true;
+                    let row = self.cursor.row;
+                    self.grid[row].output = true;
+                }
+                // Command finished, with its exit status.
+                Some(Some(b'D')) => {
+                    self.at_prompt = false;
+                    self.editing = false;
+                    let status = params
+                        .get(2)
+                        .and_then(|p| std::str::from_utf8(p).ok())
+                        .and_then(|p| p.parse::<i32>().ok());
+                    if std::mem::take(&mut self.command_running)
+                        && let Some(status) = status
+                    {
+                        self.mark_status(status);
+                    }
+                }
                 _ => {}
             },
+            // OSC 9 ; 4 ; state ; percent (ConEmu, Windows Terminal).
+            "9" if params.get(1).copied() == Some(b"4") => {
+                let number = |i: usize| {
+                    params
+                        .get(i)
+                        .and_then(|p| std::str::from_utf8(p).ok())
+                        .and_then(|p| p.parse::<u32>().ok())
+                };
+                let percent = number(3).map(|p| p.min(100) as u8);
+                let progress = match number(2) {
+                    Some(1) => Some(ProgressState::Normal),
+                    Some(2) => Some(ProgressState::Error),
+                    Some(3) => Some(ProgressState::Indeterminate),
+                    Some(4) => Some(ProgressState::Paused),
+                    _ => None,
+                }
+                .map(|state| Progress {
+                    state,
+                    percent: if state == ProgressState::Indeterminate { None } else { Some(percent.unwrap_or(0)) },
+                });
+                if progress != self.progress {
+                    self.progress = progress;
+                    self.events.push(TermEvent::Progress(progress));
+                }
+            }
             "10" | "11" | "12" => {
                 let first = code.parse().expect("matched digits");
                 self.osc_dynamic_colors(first, &params[1..], bell_terminated);
@@ -2126,6 +2320,33 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
+/// The last percentage in a line of text, like `45%` or `12.5 %`.
+fn last_percentage(text: &str) -> Option<f32> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut found = None;
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '%' {
+            continue;
+        }
+        let mut start = i;
+        if start > 0 && chars[start - 1] == ' ' {
+            start -= 1;
+        }
+        let end = start;
+        while start > 0 && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.') {
+            start -= 1;
+        }
+        let number: String = chars[start..end].iter().collect();
+        if let Ok(value) = number.trim_start_matches('.').parse::<f32>()
+            && (0.0..=100.0).contains(&value)
+            && !number.is_empty()
+        {
+            found = Some(value);
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2136,6 +2357,92 @@ mod tests {
 
     fn line(term: &Term, row: usize) -> String {
         term.grid[row].cells.iter().map(|c| c.c).collect::<String>().trim_end().to_string()
+    }
+
+    /// Two commands as fish would mark them: one with output that failed,
+    /// one with none, then a third prompt.
+    fn session(t: &mut Term, p: &mut Processor) {
+        p.advance(t, b"\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07false\r\n");
+        p.advance(t, b"\x1b]133;C\x07out 1\r\nout 2\r\n\x1b]133;D;1\x07");
+        p.advance(t, b"\x1b]133;A\x07$ \x1b]133;B\x07true\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        p.advance(t, b"\x1b]133;A;click_events=1\x07$ ");
+    }
+
+    #[test]
+    fn marks_commands_and_their_output() {
+        let (mut t, mut p) = term(20, 10);
+        session(&mut t, &mut p);
+        // `true` wrote nothing, so the next prompt is on its output's row.
+        assert_eq!(t.prompt_lines(), vec![0, 3, 4]);
+        assert_eq!(t.grid[0].status, Some(1));
+        assert_eq!(t.grid[3].status, Some(0));
+        assert_eq!(t.failed_commands_in_view(), vec![(0, 1)]);
+        // Clicking the output or the command line picks the same output.
+        assert_eq!(t.command_output_at(2), Some((1, 2)));
+        assert_eq!(t.command_output_at(0), Some((1, 2)));
+        // `true` wrote nothing; the last output is still `false`'s.
+        assert_eq!(t.command_output_at(3), None);
+        assert_eq!(t.last_command_output(), Some((1, 2)));
+        assert_eq!(t.text_between((1, 0), (2, 19)), "out 1\nout 2");
+        // The command line being edited takes clicks; old output doesn't.
+        assert!(t.click_goes_to_shell(4));
+        assert!(!t.click_goes_to_shell(1));
+        // A running command's output counts too, up to the cursor.
+        p.advance(&mut t, b"sleep\r\n\x1b]133;C\x07zzz");
+        assert!(!t.click_goes_to_shell(4));
+        assert_eq!(t.last_command_output(), Some((5, 5)));
+    }
+
+    #[test]
+    fn marks_survive_reflow() {
+        let (mut t, mut p) = term(20, 10);
+        session(&mut t, &mut p);
+        t.resize(8, 10);
+        let prompts = t.prompt_lines();
+        assert_eq!(prompts.len(), 3);
+        assert_eq!(t.line(prompts[0]).and_then(|r| r.status), Some(1));
+        assert!(t.last_command_output().is_some());
+    }
+
+    #[test]
+    fn reports_progress() {
+        let (mut t, mut p) = term(30, 4);
+        p.advance(&mut t, b"\x1b]9;4;1;42\x07\x1b]9;4;3\x07\x1b]9;4;0\x07\x1b]9;hello\x07");
+        let progress: Vec<_> = t
+            .take_events()
+            .into_iter()
+            .filter_map(|e| if let TermEvent::Progress(p) = e { Some(p) } else { None })
+            .collect();
+        assert_eq!(
+            progress,
+            vec![
+                Some(Progress {
+                    state: ProgressState::Normal,
+                    percent: Some(42)
+                }),
+                Some(Progress {
+                    state: ProgressState::Indeterminate,
+                    percent: None
+                }),
+                None,
+            ]
+        );
+        // A line rewritten in place with a percentage; a finished line isn't.
+        p.advance(&mut t, b"\x1b]133;C\x07done 100%\r\n");
+        assert_eq!(t.progress_hint(), None);
+        p.advance(&mut t, b"[###   ]  45.5%\r[####  ]  62%");
+        assert_eq!(t.progress_hint(), Some(62.0));
+        // Back at the prompt, a battery level isn't progress.
+        p.advance(&mut t, b"\r\n\x1b]133;A\x07bat 80% $ \r");
+        assert_eq!(t.progress_hint(), None);
+    }
+
+    #[test]
+    fn finds_percentages() {
+        assert_eq!(last_percentage("12% then 45.5 %  "), Some(45.5));
+        assert_eq!(last_percentage("100%"), Some(100.0));
+        assert_eq!(last_percentage("250% and %"), None);
+        assert_eq!(last_percentage("no numbers"), None);
     }
 
     #[test]

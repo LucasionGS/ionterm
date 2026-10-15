@@ -3,6 +3,7 @@
 
 mod drag;
 mod files;
+mod integration;
 mod rzsz;
 
 use std::collections::HashMap;
@@ -752,6 +753,9 @@ impl App {
             }
             Action::SshConnect => self.open_palette(None),
             Action::ToggleFiles => self.toggle_files(),
+            Action::PreviousPrompt => self.jump_to_prompt(false),
+            Action::NextPrompt => self.jump_to_prompt(true),
+            Action::CopyLastOutput => self.copy_last_output(),
             Action::NewSplit => self.split(None),
             Action::SplitRight => self.split(Some(Direction::Horizontal)),
             Action::SplitDown => self.split(Some(Direction::Vertical)),
@@ -900,6 +904,7 @@ impl App {
         let mut bell = false;
         let mut remote_cwd = false;
         let mut file_requests = Vec::new();
+        let mut progress_changed = false;
         for event in events {
             match event {
                 TermEvent::Title(title) => {
@@ -911,14 +916,19 @@ impl App {
                 TermEvent::Cwd(url) => remote_cwd |= pane.report_cwd(&url, &self.local_host),
                 TermEvent::SyncEnd => redraw |= shown,
                 TermEvent::FileRequest(request) => file_requests.push(request),
+                TermEvent::Progress(progress) => progress_changed |= pane.report_progress(progress),
+                // Back at the prompt: whatever was in progress is over.
+                TermEvent::Prompt => progress_changed |= pane.report_progress(None),
             }
         }
+        progress_changed |= pane.guess_progress();
         if title_changed {
             if is_active {
                 w.update_title();
             }
             redraw |= bar_shown;
         }
+        redraw |= progress_changed && bar_shown;
         if bell && !focused {
             w.window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
         }
@@ -1009,7 +1019,22 @@ impl App {
         }
         pane.held_button = pressed.then_some(button);
 
+        // A plain click on the command line moves the shell's cursor there,
+        // when the shell takes clicks (OSC 133 click_events): one SGR click.
+        let plain = !modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key();
+        if pressed && button == MouseButton::Left && plain && pane.lock().click_goes_to_shell(row) {
+            let (x, y) = (col + 1, row + 1);
+            pane.write(format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m").as_bytes());
+            pane.selection = None;
+            w.window.request_redraw();
+            return FollowUp::None;
+        }
+
         let follow_up = match (button, pressed) {
+            // ctrl+shift+right-click selects that command's output.
+            (MouseButton::Right, true) if modifiers.control_key() && modifiers.shift_key() => {
+                if integration::select_command_output(pane, row) { FollowUp::CopyPrimary } else { FollowUp::None }
+            }
             (MouseButton::Left, true) => {
                 let absolute = (pane.lock().viewport_to_absolute(row), col);
                 let count = match pane.last_click {
@@ -1557,6 +1582,7 @@ impl TermWindow {
                     icon,
                     color: tab.color.or(extras.and_then(|e| e.color).map(|c| c.0)),
                     active: i == self.active_tab,
+                    progress: self.tab_progress(i),
                 }
             })
             .collect()
@@ -1783,9 +1809,13 @@ impl TermWindow {
                 m,
                 scale,
                 config.tab_bar.max_title_length,
+                integration::progress_phase(),
                 &mut items,
             );
+            // An indeterminate progress bar's stripe keeps moving.
+            animating |= infos.iter().any(|t| t.progress.is_some_and(|p| p.fraction.is_none()));
         }
+        self.draw_failed_marks(theme, &mut items);
         self.draw_files(theme, &mut items);
         self.draw_drag(theme, &mut items);
         if let Some(open) = &self.menu {
@@ -2131,7 +2161,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.reload_config();
         }
         let blink = self.blink_interval();
-        let mut wake = [self.reload_at, self.expire_files(now)].into_iter().flatten().min();
+        let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
+        let mut wake = [self.reload_at, self.expire_files(now), progress_wake].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

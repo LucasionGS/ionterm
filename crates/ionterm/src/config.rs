@@ -123,6 +123,10 @@ pub struct TerminalConfig {
     /// announcing it makes some (yazi) prefer sixel over the sharper kitty
     /// protocol, but others (lsix) need it.
     pub advertise_sixel: bool,
+    /// Set up bash, zsh and fish 3 to mark prompts and commands (OSC 133),
+    /// for jumping between prompts, selecting a command's output and
+    /// failed-command marks. Only the login shell; fish 4 does it itself.
+    pub shell_integration: bool,
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
@@ -139,6 +143,7 @@ impl Default for TerminalConfig {
             term: "auto".into(),
             wheel_scroll_lines: 3,
             advertise_sixel: false,
+            shell_integration: true,
             command: Vec::new(),
             startup_ssh: None,
         }

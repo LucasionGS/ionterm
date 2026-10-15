@@ -3,12 +3,15 @@
 //! It makes sure the remote end knows ionterm's `TERM` (installing the
 //! terminfo entry with `tic` when it can, otherwise falling back to
 //! `xterm-256color`), then starts the user's login shell with a small hook
-//! that reports the working directory (OSC 7), and the `ionterm-get` and
-//! `ionterm-put` commands (OSC 5379), for this session only. Hook files live
+//! that reports the working directory (OSC 7), the shell integration that
+//! marks prompts and commands (OSC 133, `crate::shell`), and the
+//! `ionterm-get` and `ionterm-put` commands (OSC 5379), for this session only. Hook files live
 //! in a temporary directory that the shell deletes once read.
 //!
 //! The script is sent base64-encoded inside a single-quoted `sh -c`, which
 //! survives being parsed by bash, zsh, fish or csh as the login shell.
+
+use crate::shell;
 
 const TERMINFO_SOURCE: &str = include_str!("../../../../extras/terminfo/ionterm.terminfo");
 
@@ -55,6 +58,10 @@ set -q hostname; or set -g hostname (uname -n)
 function __ionterm_osc7 --on-event fish_prompt
     printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
 end
+# fish 4 marks prompts and commands itself.
+if test (string split -f1 . $version) -lt 4
+@FISH_INTEGRATION@
+end
 function __ionterm_b64
     printf %s $argv[1] | base64 | string join ''
 end
@@ -96,8 +103,7 @@ if [ -f ~/.bash_profile ]; then . ~/.bash_profile
 elif [ -f ~/.bash_login ]; then . ~/.bash_login
 elif [ -f ~/.profile ]; then . ~/.profile
 fi
-__ionterm_osc7() { printf '\e]7;file://%s%s\a' "$HOSTNAME" "$PWD"; }
-PROMPT_COMMAND="__ionterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+@BASH_INTEGRATION@
 IONTERM_EOF
     cat "$tmp/fns" >> "$tmp/rc" 2>/dev/null
     printf '%s\n' 'rm -rf "$(dirname "${BASH_SOURCE[0]}")"' >> "$tmp/rc"
@@ -108,8 +114,7 @@ IONTERM_EOF
 tmp_dir=$ZDOTDIR
 ZDOTDIR=$HOME
 [ -f "$HOME/.zshenv" ] && . "$HOME/.zshenv"
-__ionterm_osc7() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD"; }
-autoload -Uz add-zsh-hook && add-zsh-hook precmd __ionterm_osc7
+@ZSH_INTEGRATION@
 IONTERM_EOF
     cat "$tmp/fns" >> "$tmp/.zshenv" 2>/dev/null
     printf '%s\n' 'rm -rf "$tmp_dir"' 'unset tmp_dir' >> "$tmp/.zshenv"
@@ -124,7 +129,11 @@ esac
 
 /// The remote command for `ssh -t <host> <command>`.
 pub fn remote_command() -> String {
-    let script = SCRIPT.replace("@TERMINFO@", &base64(TERMINFO_SOURCE.as_bytes()));
+    let script = SCRIPT
+        .replace("@TERMINFO@", &base64(TERMINFO_SOURCE.as_bytes()))
+        .replace("@BASH_INTEGRATION@", shell::BASH)
+        .replace("@ZSH_INTEGRATION@", shell::ZSH)
+        .replace("@FISH_INTEGRATION@", shell::FISH);
     format!("exec sh -c 'eval \"$(printf %s {} | base64 -d)\"'", base64(script.as_bytes()))
 }
 

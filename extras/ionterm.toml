@@ -22,6 +22,7 @@ shell = ""                           # empty = your login shell
 term = "auto"                        # auto = xterm-ionterm if installed, else xterm-256color
 wheel_scroll_lines = 3
 advertise_sixel = false              # sixel always displays; announcing it makes yazi pick sixel over kitty graphics
+shell_integration = true             # mark prompts in bash/zsh/fish 3 (fish 4 does it itself): prompt jumps, output selection, failed marks
 
 [tab_bar]
 style = "tabs"                       # tabs (Windows Terminal style) | slanted | angled | round (kitty Powerline)
@@ -76,6 +77,11 @@ blink_interval = 0.5                 # seconds, 0 = no blinking
 # "shift+page_down" = "scroll_page_down"
 # "ctrl+shift+home" = "scroll_home"
 # "ctrl+shift+end" = "scroll_end"
+#
+# Shell integration
+# "ctrl+shift+z" = "previous_prompt"
+# "ctrl+shift+x" = "next_prompt"
+# "ctrl+shift+g" = "copy_last_command_output"
 # "ctrl+shift+equal" = "increase_font_size"
 # "ctrl+shift+minus" = "decrease_font_size"
 # "ctrl+shift+backspace" = "reset_font_size"

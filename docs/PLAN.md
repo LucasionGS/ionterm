@@ -190,7 +190,8 @@ Phase 3: files
 - [x] `ionterm-get <file>` / `ionterm-put [dir]` on the server (installed per session by the bootstrap): download or upload without lrzsz
 
 ### v0.3b: other power features
-- Shell integration (fish/bash/zsh): jump between prompts (OSC 133 marks are already tracked), select command output, OSC 7 cwd for new tabs/splits
+- [x] Shell integration (OSC 133): bash, zsh and fish 3 are set up automatically, locally and over ionterm's SSH (fish 4 marks prompts itself). Jump between prompts (ctrl+shift+z / x), copy the last command's output (ctrl+shift+g), ctrl+shift+right-click selects a command's output, a red mark beside prompts whose command failed, and clicks on the command line move the cursor (fish's `click_events`)
+- [x] Progress in the tab: OSC 9;4 (cargo, systemd, winget…), or a percentage on a line a command keeps rewriting (curl, wget, pacman)
 - SSH wrapper with terminfo install and fallback
 - Hints mode (URLs, paths, hashes, `file:line`)
 - Scrollback search (plain + regex, highlighted matches)

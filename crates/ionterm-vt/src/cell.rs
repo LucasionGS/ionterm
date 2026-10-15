@@ -91,6 +91,11 @@ pub struct Row {
     pub wrapped: bool,
     /// A shell prompt starts on this row (OSC 133;A).
     pub prompt: bool,
+    /// A command's output starts on this row (OSC 133;C).
+    pub output: bool,
+    /// On a prompt row: the exit status of the command run from it
+    /// (OSC 133;D), once it finished.
+    pub status: Option<i32>,
     /// Image placements whose top-left corner is on this row.
     pub anchors: Vec<Anchor>,
 }
@@ -101,6 +106,8 @@ impl Row {
             cells: vec![Cell::blank(bg); cols],
             wrapped: false,
             prompt: false,
+            output: false,
+            status: None,
             anchors: Vec::new(),
         }
     }
