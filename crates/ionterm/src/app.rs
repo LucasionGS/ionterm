@@ -813,6 +813,9 @@ impl App {
         w.tab_drag = None;
         w.tab_hover = Hit::None;
         if w.tabs.is_empty() {
+            // Events still queued (the key's release) must not find a window
+            // without tabs.
+            self.window = None;
             self.exit_requested = true;
             return;
         }
