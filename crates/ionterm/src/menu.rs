@@ -40,7 +40,7 @@ const SWATCHES: usize = 7;
 /// The colours offered: the theme's ANSI hues and its accent, skipping any
 /// that look the same as one already picked (themes often reuse a colour,
 /// like an accent that matches magenta), topped up from the bright hues.
-fn swatch_colors(theme: &Theme) -> Vec<Rgb> {
+pub(crate) fn swatch_colors(theme: &Theme) -> Vec<Rgb> {
     let palette = theme.palette();
     let candidates = [1, 3, 2, 6, 4, 5]
         .iter()

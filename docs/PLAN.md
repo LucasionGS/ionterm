@@ -180,7 +180,7 @@ Phase 1: connecting
 - [x] Typed `ssh` detection: SSH icon and host in the tab, duplicate re-runs the command
 
 Phase 2: managing connections
-- [ ] "New connection…" / edit form (alias, host, user, port, key, jump host, colour, icon, group), saved to `~/.ssh/config.d/ionterm`, included from `~/.ssh/config`
+- [x] "New connection…" / edit form (`ctrl+e` in the picker): alias, host, user, port, key, jump host, colour, icon, group. Saved to `~/.ssh/config.d/ionterm` (hand-added lines kept), with one `Include` added to the top of `~/.ssh/config` (backed up once to `config.ionterm-backup`). Hosts from the user's own config can get a colour, icon and group, but their ssh settings stay read-only. Delete with a confirm click.
 
 Phase 3: files
 - [ ] SFTP side panel: browse, upload, download, rename, delete, new folder, progress

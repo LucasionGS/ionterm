@@ -13,6 +13,8 @@ const MAX_VISIBLE_ROWS: usize = 10;
 pub enum PaletteAction {
     /// Connect to an ssh config host alias.
     Connect(String),
+    /// Open a host in the connection editor.
+    Edit(String),
     NewConnection,
 }
 
@@ -340,7 +342,7 @@ pub fn draw(palette: &Palette, layout: &PaletteLayout, theme: &Theme, m: CellMet
     }
 
     out.push(ChromeItem::Text {
-        text: "↵ connect   ctrl+↵ split   ↑↓ select   esc close".into(),
+        text: "↵ connect   ctrl+↵ split   ctrl+e edit   esc close".into(),
         x: p.x + (14.0 * scale).round(),
         y: layout.footer_y,
         color: muted,

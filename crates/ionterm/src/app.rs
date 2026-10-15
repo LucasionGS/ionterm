@@ -23,6 +23,7 @@ use crate::config::{
 use crate::input::{self, Action, KeyCombo, MouseAction, MouseButton};
 use crate::layout::{self, Direction, PaneId, Rect};
 use crate::links;
+use crate::editor::{self, Editor, Outcome};
 use crate::menu::{self, Menu, MenuCommand};
 use crate::palette::{self, Palette, PaletteAction, PaletteItem};
 use crate::ssh::{self, Connection, HostExtras};
@@ -100,6 +101,8 @@ struct TermWindow {
     tab_positions: HashMap<u64, f32>,
     /// The connection picker, while open.
     palette: Option<Palette>,
+    /// The connection form, while open.
+    editor: Option<Editor>,
     /// Per-host colours and icons from `hosts.toml`.
     ssh_extras: HashMap<String, HostExtras>,
     /// When the last animated frame was drawn; `None` when nothing moves.
@@ -127,6 +130,8 @@ enum BarAction {
     Palette(Option<(f32, f32)>),
     /// Run a picker entry (in a split when `true`).
     Run(PaletteAction, bool),
+    /// Something the connection form asked for.
+    Form(Outcome),
     Close(usize),
     Menu(MenuCommand, usize),
 }
@@ -240,6 +245,7 @@ impl App {
             last_tab_click: None,
             tab_positions: HashMap::new(),
             palette: None,
+            editor: None,
             ssh_extras: ssh::load_extras(),
             last_frame: None,
         };
@@ -327,7 +333,70 @@ impl App {
                 }
             }
             PaletteAction::NewConnection => {
-                tracing::info!("the connection editor arrives in the next phase");
+                let editor = Editor::new(&self.theme);
+                if let Some(w) = &mut self.window {
+                    w.editor = Some(editor);
+                }
+            }
+            PaletteAction::Edit(alias) => {
+                let Some(host) = ssh::load_hosts().into_iter().find(|h| h.alias == alias) else { return };
+                let extras = ssh::load_extras();
+                let editor = Editor::edit(&self.theme, &host, extras.get(&alias), ssh::store::is_managed(&host));
+                if let Some(w) = &mut self.window {
+                    w.editor = Some(editor);
+                }
+            }
+        }
+    }
+
+    /// Carries out what the connection form asked for.
+    fn editor_outcome(&mut self, outcome: Outcome) {
+        let Some(w) = &mut self.window else { return };
+        w.window.request_redraw();
+        let Some(editor) = &mut w.editor else { return };
+        let previous = editor.previous_alias.clone();
+        match outcome {
+            Outcome::Cancel => w.editor = None,
+            Outcome::Delete => {
+                let Some(alias) = previous else { return };
+                let result = ssh::store::delete_host(&alias).and_then(|()| ssh::store::delete_extras(&alias));
+                match result {
+                    Ok(()) => w.editor = None,
+                    Err(error) => editor.error = Some(format!("Could not delete: {error}")),
+                }
+                w.ssh_extras = ssh::load_extras();
+            }
+            Outcome::Save { connect } => {
+                let existing: Vec<String> = ssh::load_hosts().into_iter().map(|h| h.alias).collect();
+                let form = match editor
+                    .form()
+                    .and_then(|form| ssh::store::validate(&form, previous.as_deref(), &existing).map(|()| form))
+                {
+                    Ok(form) => form,
+                    Err(message) => {
+                        editor.error = Some(message);
+                        return;
+                    }
+                };
+                let saved = if editor.read_only_ssh {
+                    Ok(())
+                } else {
+                    ssh::store::save_host(&form, previous.as_deref())
+                };
+                let result = saved.and_then(|()| {
+                    ssh::store::save_extras(&form.alias, previous.as_deref(), editor.color, &editor.icon(), &editor.group())
+                });
+                if let Err(error) = result {
+                    editor.error = Some(format!("Could not save: {error}"));
+                    return;
+                }
+                w.editor = None;
+                w.ssh_extras = ssh::load_extras();
+                if connect {
+                    let connection = self.connection_for(&form.alias);
+                    let end = self.window.as_ref().map_or(0, |w| w.tabs.len());
+                    self.open_tab(end, Some(connection), None);
+                }
             }
         }
     }
@@ -819,6 +888,7 @@ impl App {
             match action {
                 Some(BarAction::NewTab) => self.new_tab(),
                 Some(BarAction::Run(action, split)) => self.run_palette(action, split),
+                Some(BarAction::Form(outcome)) => self.editor_outcome(outcome),
                 Some(BarAction::Palette(anchor)) => {
                     // Line the picker's right edge up with the button.
                     let width = self.window.as_ref().map_or(0.0, |w| w.renderer.cell_metrics().width * 64.0);
@@ -906,6 +976,21 @@ impl App {
 
         if !pressed && button == MouseButton::Left && w.tab_drag.take().is_some() {
             return Some(None);
+        }
+        // The form is modal: it takes every click while open.
+        let window_rect = w.window_rect();
+        if let Some(form) = &mut w.editor {
+            if !pressed || button != MouseButton::Left {
+                return Some(None);
+            }
+            let layout = editor::layout(form, m, scale, window_rect);
+            w.window.request_redraw();
+            return Some(
+                editor::hit(&layout, x as f32, y as f32)
+                    .flatten()
+                    .and_then(|target| form.click(target))
+                    .map(BarAction::Form),
+            );
         }
         // The picker takes clicks while open: a row runs it, outside closes it.
         if let Some(picker) = &w.palette {
@@ -1016,6 +1101,23 @@ impl App {
         let m = w.renderer.cell_metrics();
         let scale = w.scale_factor as f32;
 
+        if let Some(form) = &w.editor {
+            let layout = editor::layout(form, m, scale, w.window_rect());
+            let hover = editor::hit(&layout, x as f32, y as f32).flatten();
+            let icon = match hover {
+                Some(editor::Target::Field(_)) => CursorIcon::Text,
+                Some(_) => CursorIcon::Pointer,
+                None => CursorIcon::Default,
+            };
+            if let Some(form) = &mut w.editor
+                && form.hover != hover
+            {
+                form.hover = hover;
+                w.window.request_redraw();
+            }
+            w.set_cursor_icon(icon);
+            return;
+        }
         if let Some(picker) = &w.palette {
             let layout = palette::layout(picker, m, scale, w.window_rect());
             let hover = palette::hit(&layout, x as f32, y as f32).flatten();
@@ -1425,6 +1527,12 @@ impl TermWindow {
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => self.palette = None,
             Key::Named(NamedKey::Enter) => return picker.selected_action().map(|action| (action, ctrl)),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("e") => {
+                if let Some(PaletteAction::Connect(alias)) = picker.selected_action() {
+                    self.palette = None;
+                    return Some((PaletteAction::Edit(alias), false));
+                }
+            }
             Key::Named(NamedKey::ArrowUp) => picker.move_selection(-1),
             Key::Named(NamedKey::ArrowDown) => picker.move_selection(1),
             Key::Named(NamedKey::Tab) => picker.move_selection(if self.modifiers.shift_key() { -1 } else { 1 }),
@@ -1573,6 +1681,10 @@ impl TermWindow {
         if let Some(picker) = &self.palette {
             let layout = palette::layout(picker, m, scale, self.window_rect());
             palette::draw(picker, &layout, theme, m, scale, &mut items);
+        }
+        if let Some(form) = &self.editor {
+            let layout = editor::layout(form, m, scale, self.window_rect());
+            editor::draw(form, &layout, theme, m, scale, &mut items);
         }
         // Asks the compositor for a frame callback, so a redraw requested for
         // the next animation frame arrives at the display's refresh rate.
@@ -1723,6 +1835,28 @@ impl ApplicationHandler<UserEvent> for App {
             } => {
                 let blink = self.blink_interval();
                 let Some(w) = &mut self.window else { return };
+                if let Some(form) = &mut w.editor {
+                    if event.state != ElementState::Pressed {
+                        return;
+                    }
+                    let mods = w.modifiers;
+                    let paste = mods.control_key()
+                        && matches!(KeyCombo::from_event(&event, mods), Some(KeyCombo { key, .. }) if key == "v");
+                    if paste {
+                        let text = self.get_clipboard(false);
+                        if let (Some(text), Some(form)) = (text, self.window.as_mut().and_then(|w| w.editor.as_mut())) {
+                            form.type_text(&text);
+                        }
+                    } else if let Some(outcome) =
+                        form.key(&event.logical_key, event.text.as_deref(), mods.control_key(), mods.shift_key())
+                    {
+                        return self.editor_outcome(outcome);
+                    }
+                    if let Some(w) = &self.window {
+                        w.window.request_redraw();
+                    }
+                    return;
+                }
                 if w.palette.is_some() {
                     if event.state == ElementState::Pressed
                         && let Some((action, split)) = w.palette_key(&event)
