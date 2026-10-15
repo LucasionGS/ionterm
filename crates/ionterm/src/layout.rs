@@ -72,6 +72,39 @@ pub enum Layout {
     Stack,
 }
 
+/// The line between the two halves of a split, for dragging it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplitBorder {
+    /// The way to the split from the root: `false` = first child.
+    pub path: Vec<bool>,
+    /// `Horizontal` splits side by side, so their border is upright.
+    pub direction: Direction,
+    /// The split's whole area.
+    pub area: Rect,
+    /// Where the border is: an x for side-by-side splits, a y otherwise.
+    pub at: f32,
+}
+
+impl SplitBorder {
+    /// The split's ratio with the border moved to `pos` (an x or a y).
+    pub fn ratio_at(&self, pos: f32) -> f32 {
+        let (start, size) = match self.direction {
+            Direction::Horizontal => (self.area.x, self.area.width),
+            Direction::Vertical => (self.area.y, self.area.height),
+        };
+        ((pos - start) / size.max(1.0)).clamp(0.1, 0.9)
+    }
+
+    /// Whether a point is within `slop` pixels of the border.
+    pub fn near(&self, x: f32, y: f32, slop: f32) -> bool {
+        let a = self.area;
+        match self.direction {
+            Direction::Horizontal => (x - self.at).abs() <= slop && y >= a.y && y <= a.y + a.height,
+            Direction::Vertical => (y - self.at).abs() <= slop && x >= a.x && x <= a.x + a.width,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SplitNode {
     Leaf(PaneId),
@@ -176,6 +209,52 @@ impl SplitNode {
                 }
                 Some(false)
             }
+        }
+    }
+
+    /// Every split's border within `area`.
+    pub fn borders(&self, area: Rect) -> Vec<SplitBorder> {
+        let mut out = Vec::new();
+        self.collect_borders(area, &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn collect_borders(&self, area: Rect, path: &mut Vec<bool>, out: &mut Vec<SplitBorder>) {
+        let SplitNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } = self
+        else {
+            return;
+        };
+        let (a, b) = area.split(*direction, *ratio);
+        let at = match direction {
+            Direction::Horizontal => b.x,
+            Direction::Vertical => b.y,
+        };
+        out.push(SplitBorder {
+            path: path.clone(),
+            direction: *direction,
+            area,
+            at,
+        });
+        path.push(false);
+        first.collect_borders(a, path, out);
+        path.pop();
+        path.push(true);
+        second.collect_borders(b, path, out);
+        path.pop();
+    }
+
+    /// Sets the ratio of the split at `path`.
+    pub fn set_ratio(&mut self, path: &[bool], value: f32) {
+        let SplitNode::Split { ratio, first, second, .. } = self else { return };
+        match path.split_first() {
+            None => *ratio = value.clamp(0.1, 0.9),
+            Some((false, rest)) => first.set_ratio(rest, value),
+            Some((true, rest)) => second.set_ratio(rest, value),
         }
     }
 
@@ -335,5 +414,24 @@ mod tests {
         assert!(tree.resize(1, Direction::Horizontal, 0.1));
         let rects = arrange(Layout::Splits, &tree, &[1, 2, 3], AREA);
         assert_eq!(rects[0].1.width, 60.0);
+    }
+
+    #[test]
+    fn drags_borders() {
+        let mut tree = SplitNode::Leaf(1);
+        tree.split(1, 2, Direction::Horizontal);
+        tree.split(2, 3, Direction::Vertical);
+        let borders = tree.borders(AREA);
+        assert_eq!(borders.len(), 2);
+        assert!(borders[0].near(52.0, 10.0, 3.0) && !borders[0].near(56.0, 10.0, 3.0));
+        assert_eq!(borders[1].path, vec![true]);
+        assert!(borders[1].near(70.0, 31.0, 3.0) && !borders[1].near(20.0, 31.0, 3.0));
+
+        tree.set_ratio(&borders[0].path, borders[0].ratio_at(25.0));
+        tree.set_ratio(&borders[1].path, borders[1].ratio_at(59.0));
+        let rects = arrange(Layout::Splits, &tree, &[1, 2, 3], AREA);
+        assert_eq!(rects[0].1.width, 25.0);
+        // Dragging stops short of squashing a pane.
+        assert_eq!(rects[2].1.height, 6.0);
     }
 }

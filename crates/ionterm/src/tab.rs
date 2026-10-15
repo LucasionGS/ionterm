@@ -69,6 +69,18 @@ impl Tab {
         if self.zoomed { Layout::Stack } else { self.layout }
     }
 
+    /// The borders that can be dragged: only the split layout has them.
+    pub fn split_borders(&self, area: Rect) -> Vec<layout::SplitBorder> {
+        if self.effective_layout() != Layout::Splits || self.visible_count() < 2 {
+            return Vec::new();
+        }
+        self.tree.borders(self.pane_area(area))
+    }
+
+    pub fn set_split_ratio(&mut self, path: &[bool], ratio: f32) {
+        self.tree.set_ratio(path, ratio);
+    }
+
     /// The part of `area` left for panes beside the file panel.
     pub fn pane_area(&self, area: Rect) -> Rect {
         match &self.files {

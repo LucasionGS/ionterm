@@ -29,7 +29,7 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **Safe pasting**: pasting several lines into something that would run each one immediately (a bare `sh`, a `sudo` prompt, an old bash) asks first, and offers to join them into one line instead. Shells that handle pastes safely are never bothered.
 - **Never miss a finished build**: tabs you're not looking at show a dot for new output, a bell when something rings, and a ✓ or ✗ when a long command finishes. If you're in another window, you get a desktop notification too ("✗ cargo build (exit 101), finished after 2m 03s"). Programs can send their own notifications with OSC 9 / 777.
 - **Progress in the tab**: downloads, builds and updates fill a bar along the bottom of their tab, whether the program reports its progress or just prints `45%`.
-- **Splits and layouts**: split any pane, or let kitty-style layouts (tall, fat, grid, stack) arrange them. New tabs and splits open in the directory you're in.
+- **Splits and layouts**: split any pane and drag the borders between them, or let kitty-style layouts (tall, fat, grid, stack) arrange them. New tabs and splits open in the directory you're in.
 - **SSH-friendly**: `TERM` falls back to `xterm-256color` whenever the remote end might not know `xterm-ionterm`, so no more "unknown terminal".
 
 Coming up: more. See [the plan](docs/PLAN.md). See [the plan](docs/PLAN.md).

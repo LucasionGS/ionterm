@@ -150,6 +150,8 @@ struct TermWindow {
     hints: Option<hints::HintsMode>,
     /// The scrollback search, while open.
     search: Option<search::SearchState>,
+    /// A split border being dragged with the mouse.
+    split_drag: Option<layout::SplitBorder>,
 }
 
 struct TabDrag {
@@ -304,6 +306,7 @@ impl App {
             zmodem_transfers: HashMap::new(),
             hints: None,
             search: None,
+            split_drag: None,
         };
         w.drops = dnd::listen(&w.window, self.proxy.clone());
         w.relayout(&self.config, false);
@@ -1148,6 +1151,17 @@ impl App {
         let Some(w) = &mut self.window else { return FollowUp::None };
         let (x, y) = (w.pointer.x, w.pointer.y);
 
+        // A press on the line between split panes drags it.
+        if button == MouseButton::Left {
+            if !pressed && w.split_drag.take().is_some() {
+                return FollowUp::None;
+            }
+            if pressed && let Some(border) = w.border_at(x as f32, y as f32) {
+                w.split_drag = Some(border);
+                return FollowUp::None;
+            }
+        }
+
         let target = if pressed { w.pane_at(x, y) } else { w.capture.take() };
         let Some(id) = target else { return FollowUp::None };
         if pressed {
@@ -1372,6 +1386,30 @@ impl App {
         let (x, y) = (position.x, position.y);
         let m = w.renderer.cell_metrics();
         let scale = w.scale_factor as f32;
+
+        if let Some(border) = &w.split_drag {
+            let pos = match border.direction {
+                Direction::Horizontal => x as f32,
+                Direction::Vertical => y as f32,
+            };
+            let (path, ratio) = (border.path.clone(), border.ratio_at(pos));
+            let tab = w.active_tab;
+            w.tabs[tab].set_split_ratio(&path, ratio);
+            w.relayout(&self.config, false);
+            w.window.request_redraw();
+            return;
+        }
+        if w.capture.is_none()
+            && w.dialog.is_none()
+            && w.editor.is_none()
+            && let Some(border) = w.border_at(x as f32, y as f32)
+        {
+            w.set_cursor_icon(match border.direction {
+                Direction::Horizontal => CursorIcon::ColResize,
+                Direction::Vertical => CursorIcon::RowResize,
+            });
+            return;
+        }
 
         if let Some(open) = &w.dialog {
             let layout = dialog::layout(open, m, scale, w.window_rect());
@@ -1604,6 +1642,16 @@ impl App {
 impl TermWindow {
     fn active_pane(&self) -> &Pane {
         self.tabs[self.active_tab].active_pane()
+    }
+
+    /// The split border under a point, if any (a few pixels either side).
+    fn border_at(&self, x: f32, y: f32) -> Option<layout::SplitBorder> {
+        if self.settings_page().is_some() || self.tab_bar.is_some_and(|b| b.contains(x, y)) {
+            return None;
+        }
+        let slop = (5.0 * self.scale_factor as f32).round();
+        let area = self.content_area();
+        self.tabs[self.active_tab].split_borders(area).into_iter().find(|b| b.near(x, y, slop))
     }
 
     /// The visible pane of the active tab containing a point.
