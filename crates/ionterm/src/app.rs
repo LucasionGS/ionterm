@@ -290,7 +290,12 @@ impl App {
         let (tabs, active_tab) = match self.restore_session(m) {
             Some(restored) => restored,
             None => {
-                let connection = self.config.terminal.startup_ssh.clone().map(|alias| self.connection_for(&alias));
+                let terminal = &self.config.terminal;
+                let connection = match (&terminal.startup_host, &terminal.startup_ssh) {
+                    (Some(alias), _) => Some(self.connection_for(alias)),
+                    (None, Some(args)) => Some(self.connection_from_args(args)),
+                    (None, None) => None,
+                };
                 let pane = self.spawn_pane(m, connection, None)?;
                 (vec![Tab::new(pane, self.default_layout())], 0)
             }
@@ -367,6 +372,15 @@ impl App {
         let hosts = ssh::load_hosts();
         let extras = self.window.as_ref().map_or_else(ssh::load_extras, |w| w.ssh_extras.clone());
         Connection::new(alias, hosts.iter().find(|h| h.alias == alias), extras.get(alias))
+    }
+
+    /// The command for `ionterm ssh …`; a destination that is a config host
+    /// gets that host's settings too.
+    fn connection_from_args(&self, args: &ssh::SshArgs) -> Connection {
+        let hosts = ssh::load_hosts();
+        let extras = self.window.as_ref().map_or_else(ssh::load_extras, |w| w.ssh_extras.clone());
+        let alias = &args.destination;
+        Connection::from_args(args, hosts.iter().find(|h| &h.alias == alias), extras.get(alias))
     }
 
     /// What duplicating a pane runs: the same SSH connection, or a shell in
@@ -789,6 +803,7 @@ impl App {
                         Some(Connection {
                             alias: detected.host().to_string(),
                             argv: detected.argv.clone(),
+                            options: Vec::new(),
                             managed: false,
                         }),
                         None,

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 pub use config::{SshHost, load_hosts};
-pub use detect::DetectedSsh;
+pub use detect::{DetectedSsh, SshArgs};
 
 use crate::config::config_dir;
 use crate::theme::ThemeColor;
@@ -70,28 +70,52 @@ pub fn load_extras() -> HashMap<String, HostExtras> {
 /// A connection ionterm opened, and how to open it again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Connection {
+    /// The host alias, or the destination given to `ionterm ssh`.
     pub alias: String,
     pub argv: Vec<String>,
+    /// ssh options given to `ionterm ssh`, one flag per word. Empty for a
+    /// config host.
+    pub options: Vec<String>,
     /// Built by ionterm from a host alias (rather than copied from a typed
     /// `ssh`), so extra commands can share its connection: the file panel
     /// works only for these.
     pub managed: bool,
 }
 
+/// Flags of `ssh` that only concern the interactive session (tty,
+/// forwarding, backgrounding), left out of the one-off commands that share
+/// its connection.
+const SESSION_OPTIONS: &str = "AaDfGLMNnRsTtWXxY";
+
 impl Connection {
     /// Builds the `ssh` command for a host alias.
     pub fn new(alias: &str, host: Option<&SshHost>, extras: Option<&HostExtras>) -> Self {
+        let args = SshArgs {
+            destination: alias.to_string(),
+            ..SshArgs::default()
+        };
+        Self::from_args(&args, host, extras)
+    }
+
+    /// Builds the `ssh` command for arguments given to `ionterm ssh`. `host`
+    /// and `extras` apply when the destination is a config host alias.
+    pub fn from_args(args: &SshArgs, host: Option<&SshHost>, extras: Option<&HostExtras>) -> Self {
         let mut argv = vec!["ssh".to_string()];
         argv.extend(control_options(true));
-        let integration = extras.and_then(|e| e.integration).unwrap_or(true) && !host.is_some_and(|h| h.remote_command);
+        argv.extend(args.options.iter().cloned());
+        let integration = args.command.is_empty()
+            && extras.and_then(|e| e.integration).unwrap_or(true)
+            && !host.is_some_and(|h| h.remote_command);
         if integration {
-            argv.extend(["-t".into(), alias.to_string(), bootstrap::remote_command()]);
+            argv.extend(["-t".into(), args.destination.clone(), bootstrap::remote_command()]);
         } else {
-            argv.push(alias.to_string());
+            argv.push(args.destination.clone());
+            argv.extend(args.command.iter().cloned());
         }
         Self {
-            alias: alias.to_string(),
+            alias: args.destination.clone(),
             argv,
+            options: args.options.clone(),
             managed: true,
         }
     }
@@ -103,8 +127,25 @@ impl Connection {
     pub fn exec_argv(&self) -> Vec<String> {
         let mut argv = vec!["ssh".to_string()];
         argv.extend(control_options(false));
+        argv.extend(self.connection_options());
         argv.extend(["-o".into(), "BatchMode=yes".into(), "-T".into(), "--".into(), self.alias.clone()]);
         argv
+    }
+
+    /// The given options that pick the connection (port, user, jump host,
+    /// key, `-o`…), so one-off commands find the same shared connection.
+    fn connection_options(&self) -> Vec<String> {
+        let mut kept = Vec::new();
+        let mut words = self.options.iter();
+        while let Some(word) = words.next() {
+            let flag = word.chars().nth(1).unwrap_or_default();
+            let value = detect::OPTIONS_WITH_VALUES.contains(flag).then(|| words.next()).flatten();
+            if !SESSION_OPTIONS.contains(flag) {
+                kept.push(word.clone());
+                kept.extend(value.cloned());
+            }
+        }
+        kept
     }
 }
 
@@ -191,4 +232,26 @@ pub fn local_hostname() -> String {
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn shares_only_connection_options() {
+        let args = detect::parse_args(&words("-tA -L 8080:localhost:80 -J jump me@box -p 2222 -o User=x")).unwrap();
+        let connection = Connection::from_args(&args, None, None);
+        assert_eq!(connection.alias, "me@box");
+        assert_eq!(connection.connection_options(), words("-J jump -p 2222 -o User=x"));
+        assert!(connection.exec_argv().ends_with(&words("-J jump -p 2222 -o User=x -o BatchMode=yes -T -- me@box")));
+        assert!(connection.argv.ends_with(&["-t".into(), "me@box".into(), bootstrap::remote_command()]));
+
+        let args = detect::parse_args(&words("box htop")).unwrap();
+        assert!(Connection::from_args(&args, None, None).argv.ends_with(&words("box htop")));
+    }
 }

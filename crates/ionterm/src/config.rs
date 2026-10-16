@@ -247,9 +247,12 @@ pub struct TerminalConfig {
     /// Program and arguments from `ionterm -e`; overrides `shell`.
     #[serde(skip)]
     pub command: Vec<String>,
-    /// Host alias from `ionterm ssh <host>`: the first tab connects to it.
+    /// Host alias from `ionterm host <host>`: the first tab connects to it.
     #[serde(skip)]
-    pub startup_ssh: Option<String>,
+    pub startup_host: Option<String>,
+    /// Arguments from `ionterm ssh …`: the first tab connects with them.
+    #[serde(skip)]
+    pub startup_ssh: Option<crate::ssh::SshArgs>,
 }
 
 impl Default for TerminalConfig {
@@ -265,6 +268,7 @@ impl Default for TerminalConfig {
             scrollback_pager: "less -R +INPUT_LINE_NUMBER".into(),
             remote_control: true,
             command: Vec::new(),
+            startup_host: None,
             startup_ssh: None,
         }
     }

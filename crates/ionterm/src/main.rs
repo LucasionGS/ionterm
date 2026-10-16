@@ -41,7 +41,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn print_help() {
     println!("ionterm {VERSION}: a GPU-rendered terminal emulator\n");
     println!("Usage: ionterm [options] [-e <command> [args...]]");
-    println!("       ionterm ssh <host>       Open a window connected to an ssh config host");
+    println!("       ionterm host <host>      Open a window connected to an ssh config host");
+    println!("       ionterm ssh <args...>    Open a window connected with ssh arguments (\"ionterm ssh -p 2222 user@host\")");
     println!("       ionterm @ <command>      Control a running ionterm (\"ionterm @ help\" lists commands)\n");
     println!("Options:");
     println!("  -e, --exec <command>   Run <command> instead of the shell (takes the rest of the line)");
@@ -74,12 +75,22 @@ fn main() -> ExitCode {
                 println!("ionterm {VERSION}");
                 return ExitCode::SUCCESS;
             }
-            "ssh" => {
+            "host" => {
                 let Some(host) = args.next() else {
-                    eprintln!("Missing host. Usage: ionterm ssh <host>");
+                    eprintln!("Missing host. Usage: ionterm host <host>");
                     return ExitCode::from(2);
                 };
-                config.terminal.startup_ssh = Some(host);
+                config.terminal.startup_host = Some(host);
+            }
+            "ssh" => {
+                let given: Vec<String> = args.by_ref().collect();
+                match ssh::detect::parse_args(&given) {
+                    Ok(parsed) => config.terminal.startup_ssh = Some(parsed),
+                    Err(message) => {
+                        eprintln!("{message} Usage: ionterm ssh [ssh options] <destination> [command]");
+                        return ExitCode::from(2);
+                    }
+                }
             }
             "-e" | "--exec" => {
                 config.terminal.command = args.by_ref().collect();

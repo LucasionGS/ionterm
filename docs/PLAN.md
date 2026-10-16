@@ -173,7 +173,8 @@ Phase 1: connecting
 - [x] Hosts from `~/.ssh/config` (following `Include`), with ionterm extras (colour, icon, group) in `~/.config/ionterm/hosts.toml`
 - [x] "Connect SSH" palette (`ctrl+shift+s`): fuzzy search, Enter connects in a new tab
 - [x] `⌄` button next to `+` in the tab bar, opening the same picker
-- [x] `ionterm ssh <host>` on the command line
+- [x] `ionterm host <host>` on the command line
+- [x] `ionterm ssh <ssh args>` (`ionterm ssh -J jump user@host -p 2222`): any connection, with the same bootstrap, reconnect and file panel as config hosts. The given options go to every command sharing the connection, minus the session-only ones (tty, forwarding)
 - [x] Remote bootstrap on connect: install the `xterm-ionterm` terminfo (or fall back to `xterm-256color`), and a session-only OSC 7 hook for fish/bash/zsh so ionterm knows the remote directory. Nothing else is written to the server.
 - [x] "Duplicate tab" on an SSH tab connects to the same host (new tabs and splits stay local)
 - [x] Disconnect banner with Enter to reconnect, instead of closing the tab

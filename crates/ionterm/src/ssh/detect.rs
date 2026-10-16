@@ -1,7 +1,58 @@
 //! Recognising an `ssh` the user typed in a shell, from its command line.
 
 /// Options of `ssh` that take a value, so the value isn't mistaken for the host.
-const OPTIONS_WITH_VALUES: &str = "BbcDEeFIiJLlmOoPpQRSWw";
+pub const OPTIONS_WITH_VALUES: &str = "BbcDEeFIiJLlmOoPpQRSWw";
+
+/// `ssh` arguments given to ionterm (`ionterm ssh -J jump user@host -p 2222`),
+/// split the way `ssh` reads them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SshArgs {
+    /// The options, one flag per word (`-tp22` becomes `-t -p 22`), so single
+    /// flags can be picked out.
+    pub options: Vec<String>,
+    pub destination: String,
+    /// A remote command, run instead of a login shell.
+    pub command: Vec<String>,
+}
+
+/// Parses `ssh` arguments (without the program). Like `ssh`, options may
+/// come before or after the destination; the first word after the
+/// destination that isn't an option starts the remote command.
+pub fn parse_args(args: &[String]) -> Result<SshArgs, String> {
+    let mut parsed = SshArgs::default();
+    let mut destination = None;
+    let mut ended = false; // after `--`, nothing more is an option
+    let mut words = args.iter().enumerate();
+    while let Some((index, word)) = words.next() {
+        if !ended && word == "--" {
+            ended = true;
+            continue;
+        }
+        match word.strip_prefix('-').filter(|flags| !ended && !flags.is_empty()) {
+            Some(flags) => {
+                for (i, c) in flags.char_indices() {
+                    parsed.options.push(format!("-{c}"));
+                    if OPTIONS_WITH_VALUES.contains(c) {
+                        let rest = &flags[i + c.len_utf8()..];
+                        let value = if rest.is_empty() { words.next().map(|(_, v)| v.as_str()) } else { Some(rest) };
+                        let Some(value) = value else {
+                            return Err(format!("Missing value for -{c}."));
+                        };
+                        parsed.options.push(value.to_string());
+                        break;
+                    }
+                }
+            }
+            None if destination.is_none() => destination = Some(word.clone()),
+            None => {
+                parsed.command = args[index..].to_vec();
+                break;
+            }
+        }
+    }
+    parsed.destination = destination.ok_or("Missing destination.")?;
+    Ok(parsed)
+}
 
 /// A typed ssh session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,5 +138,24 @@ mod tests {
         assert_eq!(parse_ssh_argv(&argv("ssh -o ControlMaster=no -- box")).unwrap().destination, "box");
         assert!(parse_ssh_argv(&argv("ssh -V")).is_none());
         assert!(parse_ssh_argv(&argv("sshd -D")).is_none());
+    }
+
+    #[test]
+    fn parses_given_args() {
+        let a = parse_args(&argv("-J jump@10.0.0.1 me@box.example.com -p 11996")).unwrap();
+        assert_eq!(a.options, argv("-J jump@10.0.0.1 -p 11996"));
+        assert_eq!(a.destination, "me@box.example.com");
+        assert!(a.command.is_empty());
+
+        let a = parse_args(&argv("-tAp22 box htop -d 5")).unwrap();
+        assert_eq!(a.options, argv("-t -A -p 22"));
+        assert_eq!(a.command, argv("htop -d 5"));
+
+        let a = parse_args(&argv("-- box -p 22")).unwrap();
+        assert!(a.options.is_empty());
+        assert_eq!(a.command, argv("-p 22"));
+
+        assert!(parse_args(&argv("-p")).is_err());
+        assert!(parse_args(&argv("-v -4")).is_err());
     }
 }

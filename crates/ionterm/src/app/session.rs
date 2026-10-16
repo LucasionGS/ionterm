@@ -13,10 +13,14 @@ use crate::tab::Tab;
 const SAVE_INTERVAL: Duration = Duration::from_secs(3);
 
 impl App {
-    /// Whether this window takes part: not with `-e` or `ionterm ssh`, which
-    /// open a window for one thing.
+    /// Whether this window takes part: not with `-e`, `ionterm host` or
+    /// `ionterm ssh`, which open a window for one thing.
     fn session_enabled(&self) -> bool {
-        self.config.session.restore && self.config.terminal.command.is_empty() && self.config.terminal.startup_ssh.is_none()
+        let terminal = &self.config.terminal;
+        self.config.session.restore
+            && terminal.command.is_empty()
+            && terminal.startup_host.is_none()
+            && terminal.startup_ssh.is_none()
     }
 
     /// The tabs of the last session, opened again, and which was active.
@@ -93,7 +97,8 @@ impl App {
                     .map(|pane| match &pane.connection {
                         Some(connection) => SavedPane {
                             cwd: None,
-                            ssh: connection.managed.then(|| connection.alias.clone()),
+                            // Only config hosts can be reopened by name.
+                            ssh: (connection.managed && connection.options.is_empty()).then(|| connection.alias.clone()),
                         },
                         None => SavedPane {
                             cwd: pane.working_dir().map(|dir| dir.display().to_string()),
