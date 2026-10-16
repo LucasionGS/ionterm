@@ -165,8 +165,46 @@ struct Uniforms {
     atlas_size: [f32; 2],
 }
 
+/// The GPU objects every window shares. Each window having its own breaks
+/// NVIDIA's Vulkan driver on Wayland: once one window's instance is
+/// destroyed, configuring another window's swapchain crashes.
+#[derive(Clone, Debug)]
+pub struct Gpu {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl Gpu {
+    /// Picks a GPU that can draw to `surface` and opens it.
+    fn new(instance: wgpu::Instance, surface: &wgpu::Surface<'_>) -> anyhow::Result<Self> {
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            force_fallback_adapter: false,
+            compatible_surface: Some(surface),
+            ..Default::default()
+        }))
+        .context("no GPU adapter can draw to this window")?;
+        tracing::info!("using GPU adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("ionterm"),
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            ..Default::default()
+        }))
+        .context("creating the GPU device")?;
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        })
+    }
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
+    gpu: Gpu,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -192,30 +230,39 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new<W>(window: Arc<W>, width: u32, height: u32, font: FontOptions, style: RenderStyle) -> anyhow::Result<Self>
+    /// A renderer for `window`. `gpu` is the one the other windows use
+    /// (`Renderer::gpu`); without it, a GPU is picked for this window and
+    /// opened on `display`. That is the display connection rather than a
+    /// window, since the GPU keeps it alive and would keep a window open.
+    pub fn new<W, D>(
+        window: Arc<W>,
+        gpu: Option<&Gpu>,
+        display: D,
+        width: u32,
+        height: u32,
+        font: FontOptions,
+        style: RenderStyle,
+    ) -> anyhow::Result<Self>
     where
         W: HasWindowHandle + HasDisplayHandle + std::fmt::Debug + Send + Sync + 'static,
+        D: HasDisplayHandle + std::fmt::Debug + Send + Sync + 'static,
     {
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
-        );
-        let surface = instance.create_surface(window).context("creating the window surface")?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            force_fallback_adapter: false,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .context("no GPU adapter can draw to this window")?;
-        tracing::info!("using GPU adapter: {:?}", adapter.get_info());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("ionterm"),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            ..Default::default()
-        }))
-        .context("creating the GPU device")?;
+        let (surface, gpu) = match gpu {
+            Some(gpu) => {
+                let surface = gpu.instance.create_surface(window).context("creating the window surface")?;
+                (surface, gpu.clone())
+            }
+            None => {
+                let instance =
+                    wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)));
+                let surface = instance.create_surface(window).context("creating the window surface")?;
+                let gpu = Gpu::new(instance, &surface)?;
+                (surface, gpu)
+            }
+        };
+        let (adapter, device, queue) = (&gpu.adapter, gpu.device.clone(), gpu.queue.clone());
 
-        let caps = surface.get_capabilities(&adapter);
+        let caps = surface.get_capabilities(adapter);
         // Theme colours are sRGB values written as-is and blended in sRGB
         // space, like every other terminal. That needs a plain 8-bit UNORM
         // target: an `*Srgb` format would encode them a second time, and a
@@ -398,6 +445,7 @@ impl Renderer {
 
         Ok(Self {
             surface,
+            gpu,
             device,
             queue,
             config,
@@ -448,6 +496,11 @@ impl Renderer {
 
     pub fn set_style(&mut self, style: RenderStyle) {
         self.style = style;
+    }
+
+    /// The GPU this renderer draws with, for the next window's renderer.
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

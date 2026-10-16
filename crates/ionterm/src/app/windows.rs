@@ -243,6 +243,7 @@ impl App {
                 return Err(error);
             }
         };
+        self.gpu.get_or_insert_with(|| renderer.gpu().clone());
         let m = renderer.cell_metrics();
         let mut in_session = true;
         let opened = match content {
@@ -405,6 +406,8 @@ impl App {
         let size = window.inner_size();
         let renderer = Renderer::new(
             window.clone(),
+            self.gpu.as_ref(),
+            event_loop.owned_display_handle(),
             size.width,
             size.height,
             font_options(&self.config.font, self.config.font.size, scale_factor),

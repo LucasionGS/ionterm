@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use ionterm_render::{Chrome, ChromeItem, FontOptions, PaneView, RenderStyle, Renderer};
+use ionterm_render::{Chrome, ChromeItem, FontOptions, Gpu, PaneView, RenderStyle, Renderer};
 use ionterm_vt::{CursorShape, TermEvent, TermMode};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
@@ -112,6 +112,8 @@ pub struct App {
     parked: Vec<TermWindow>,
     /// Windows to open once the event loop can (`about_to_wait`).
     pending_windows: Vec<NewWindow>,
+    /// The GPU of the first window, which every later window draws with too.
+    gpu: Option<Gpu>,
     next_window_serial: u64,
     /// The window that last had the keyboard: remote commands from outside
     /// ionterm go there.
@@ -280,6 +282,7 @@ impl App {
             window: None,
             parked: Vec::new(),
             pending_windows: vec![first],
+            gpu: None,
             next_window_serial: 0,
             last_focused: None,
             tab_drop: None,
