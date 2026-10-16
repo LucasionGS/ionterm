@@ -244,14 +244,13 @@ Today every window is its own process with its own socket (`ionterm-<pid>.sock`)
 
 **Port forwards from the tab**
 
-- [ ] "Forward port…" in the palette and the tab menu of SSH tabs: remote port (or `host:port` behind the server) → local port, added with `ssh -O forward -L` on the shared ControlMaster, so there's no new login. Removed with `ssh -O cancel`. Reverse forwards (`-R`) too
-- [ ] A chip in the tab bar for each live forward (`:3000 → :3000`); click opens `http://localhost:<port>`, right-click closes it
-- [ ] Remote ports to pick from: listening ports on the server (`ss -ltnH`, falling back to `/proc/net/tcp`), with the process name when readable
-- [ ] Saved per host in `hosts.toml` (`forwards = ["3000", "8080:localhost:80"]`), set up again on connect and after a reconnect; editable in the connection editor
-- [ ] Local panes: ports the pane's process tree listens on (from `/proc/<pid>/net/tcp` and its fds) as a chip with an open button, so `npm run dev` shows `:5173`
-- [ ] A local port that's already taken picks the next free one and says so
-- Windows' OpenSSH has no ControlMaster, so there a forward runs its own `ssh -N -L` process
-- `ionterm @ forward`/`unforward` for scripts
+- [x] "Forward a port…" (`forward_port`, the palette, SSH tabs' right-click menu): the server's listening ports (`ss -ltnp`, else `/proc/net/tcp`) with their programs, plus typing one in either way. Added with `ssh -O forward` on the shared master (no new login) and removed with `ssh -O cancel`; on Windows (no master) each is an `ssh -N` (`forward.rs`, `app/forwards.rs`)
+- [x] Specs: `3000`, `8080:80`, `8080:db.internal:5432`, `R 9000[:3000]` for the server listening
+- [x] Each pane owns its forwards (`Pane::forwards`) and cancels them when it closes (the master outlives the tab by `ControlPersist`); they move with the pane between windows
+- [x] Chips at the right of the tab bar (they show the bar even with one tab): forwards and the ports a local pane's processes listen on (`/proc/net/tcp*` inodes against the pane's process tree's fds, every 2 s for the visible tab). Click opens `http://localhost:<port>`, right/middle click stops a forward, hovering explains it
+- [x] A local port that's taken moves to the next free one, and the toast says so
+- [x] Saved per host (`forwards = […]` in `hosts.toml`, "Port forwards" in the connection editor): set up once the master is up (`ssh -O check`, up to 2 minutes for a password), and again after a reconnect
+- [x] `ionterm @ forward SPEC` (waits, prints the local port), `unforward [R ]PORT`, `forwards`
 
 **Command blocks you can act on**
 

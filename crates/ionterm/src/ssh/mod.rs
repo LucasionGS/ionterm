@@ -37,6 +37,9 @@ pub struct HostExtras {
     /// Run the remote bootstrap (terminfo and directory reporting). Turn it
     /// off for hosts without a POSIX shell, like network gear.
     pub integration: Option<bool>,
+    /// Port forwards set up whenever ionterm connects (`crate::forward::Spec`
+    /// text: `"3000"`, `"8080:80"`, `"R 9000:3000"`).
+    pub forwards: Vec<String>,
 }
 
 impl HostExtras {
@@ -129,6 +132,33 @@ impl Connection {
         argv.extend(control_options(false));
         argv.extend(self.connection_options());
         argv.extend(["-o".into(), "BatchMode=yes".into(), "-T".into(), "--".into(), self.alias.clone()]);
+        argv
+    }
+
+    /// `ssh` talking to this host's shared connection itself (`-O forward`,
+    /// `-O cancel`, `-O check`). `None` without connection sharing (Windows).
+    pub fn control_argv(&self, command: &str, args: &[String]) -> Option<Vec<String>> {
+        let options = control_options(false);
+        if options.is_empty() {
+            return None;
+        }
+        let mut argv = vec!["ssh".to_string()];
+        argv.extend(options);
+        argv.extend(self.connection_options());
+        argv.extend(["-O".into(), command.into()]);
+        argv.extend(args.iter().cloned());
+        argv.extend(["--".into(), self.alias.clone()]);
+        Some(argv)
+    }
+
+    /// A separate `ssh -N` that only carries forwards, where connections
+    /// can't be shared (Windows).
+    pub fn tunnel_argv(&self, args: &[String]) -> Vec<String> {
+        let mut argv = vec!["ssh".to_string()];
+        argv.extend(self.connection_options());
+        argv.extend(["-o".into(), "BatchMode=yes".into(), "-o".into(), "ExitOnForwardFailure=yes".into(), "-N".into()]);
+        argv.extend(args.iter().cloned());
+        argv.extend(["--".into(), self.alias.clone()]);
         argv
     }
 

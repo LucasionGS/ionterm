@@ -5,6 +5,7 @@ mod background;
 mod drag;
 mod editing;
 mod files;
+mod forwards;
 mod hints;
 mod integration;
 mod remote;
@@ -94,6 +95,8 @@ pub enum UserEvent {
     Remote(crate::remote::Request),
     /// Background work on a server file being edited locally.
     Edit(u64, crate::edit::Event),
+    /// Background work on a pane's port forwards.
+    Forward(PaneId, crate::forward::Event),
 }
 
 pub struct App {
@@ -203,6 +206,10 @@ struct TermWindow {
     split_drag: Option<layout::SplitBorder>,
     /// The streak behind a jumping cursor.
     trail: trail::Trail,
+    /// When the ports local programs listen on were last looked at.
+    listening_checked: Option<Instant>,
+    /// Port chips are showing (they keep the tab bar up by themselves).
+    chips_shown: bool,
 }
 
 struct TabDrag {
@@ -237,6 +244,8 @@ enum BarAction {
     Settings,
     /// A tab was let go away from the tab bar: it leaves the window.
     DetachTab(usize),
+    /// A port chip was clicked (`true` = right or middle: stop it).
+    Chip(usize, bool),
 }
 
 /// Work that needs `&mut App` after a window borrow ends.
@@ -312,7 +321,11 @@ impl App {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
         let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
-        Pane::spawn(id, &self.config.terminal, connection, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem)
+        let pane = Pane::spawn(id, &self.config.terminal, connection, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem)?;
+        if let Some(connection) = &pane.connection {
+            self.start_saved_forwards(id, connection);
+        }
+        Ok(pane)
     }
 
     /// A pane running a program (an editor, the pager) instead of the shell;
@@ -440,6 +453,18 @@ impl App {
                     self.move_tab(index, to);
                 }
             }
+            PaletteAction::Forward(text) => {
+                let pane = self.window.as_ref().map(|w| w.active_pane().id);
+                if let (Some(pane), Ok(spec)) = (pane, crate::forward::Spec::parse(&text)) {
+                    self.start_forward(pane, spec);
+                }
+            }
+            PaletteAction::ForwardOther(reverse) => self.ask_forward(reverse),
+            PaletteAction::Unforward(reverse, listen) => {
+                if let Some(pane) = self.window.as_ref().map(|w| w.active_pane().id) {
+                    self.stop_forward(pane, reverse, listen);
+                }
+            }
             PaletteAction::MovePane(target) => {
                 if let Some(id) = self.window.as_ref().map(|w| w.active_pane().id) {
                     self.move_pane(id, target);
@@ -481,11 +506,12 @@ impl App {
             }
             Outcome::Save { connect } => {
                 let existing: Vec<String> = ssh::load_hosts().into_iter().map(|h| h.alias).collect();
-                let form = match editor
+                let checked = editor
                     .form()
                     .and_then(|form| ssh::store::validate(&form, previous.as_deref(), &existing).map(|()| form))
-                {
-                    Ok(form) => form,
+                    .and_then(|form| editor.forwards().map(|forwards| (form, forwards)));
+                let (form, forwards) = match checked {
+                    Ok(checked) => checked,
                     Err(message) => {
                         editor.error = Some(message);
                         return;
@@ -497,7 +523,7 @@ impl App {
                     ssh::store::save_host(&form, previous.as_deref())
                 };
                 let result = saved.and_then(|()| {
-                    ssh::store::save_extras(&form.alias, previous.as_deref(), editor.color, &editor.icon(), &editor.group())
+                    ssh::store::save_extras(&form.alias, previous.as_deref(), editor.color, &editor.icon(), &editor.group(), &forwards)
                 });
                 if let Err(error) = result {
                     editor.error = Some(format!("Could not save: {error}"));
@@ -543,7 +569,13 @@ impl App {
         if let Err(error) = pane.reconnect(&self.config.terminal, metrics, proxy) {
             tracing::warn!("could not reconnect: {error:#}");
         }
-        w.window.request_redraw();
+        // Its forwards went with the old connection: set them up again.
+        let specs = pane.forwards.forget();
+        let (id, connection) = (pane.id, pane.connection.clone());
+        w.refresh_chips(&self.config);
+        if let Some(connection) = connection {
+            self.start_forwards_when_connected(id, connection, specs, true);
+        }
     }
 
     fn reload_config(&mut self) {
@@ -847,6 +879,10 @@ impl App {
                 w.tabs[tab].color = color;
                 w.window.request_redraw();
             }
+            MenuCommand::Forward => {
+                w.select_tab(tab);
+                self.open_forward_picker();
+            }
             MenuCommand::MoveToNewWindow => self.move_tab(tab, None),
             MenuCommand::MoveToWindow => {
                 w.select_tab(tab);
@@ -988,6 +1024,7 @@ impl App {
                 }
             }
             Action::MoveTabToWindow => self.open_move_tab_picker(),
+            Action::ForwardPort => self.open_forward_picker(),
             Action::MovePaneToNewTab | Action::MovePaneToNewWindow => {
                 let target = if action == Action::MovePaneToNewTab { PaneTarget::NewTab } else { PaneTarget::NewWindow };
                 if let Some(id) = self.window.as_ref().map(|w| w.active_pane().id) {
@@ -1326,6 +1363,7 @@ impl App {
                 Some(BarAction::Menu(command, tab)) => self.menu_command(tab, command),
                 Some(BarAction::Dialog(answer)) => self.dialog_answer(answer),
                 Some(BarAction::DetachTab(index)) => self.start_tab_drop(index),
+                Some(BarAction::Chip(index, stop)) => self.chip_click(index, stop),
                 None => {}
             }
             return FollowUp::None;
@@ -1585,6 +1623,8 @@ impl App {
                 w.window.request_redraw();
                 None
             }
+            (MouseButton::Left, Hit::Chip(i)) => Some(BarAction::Chip(i, false)),
+            (MouseButton::Right | MouseButton::Middle, Hit::Chip(i)) => Some(BarAction::Chip(i, true)),
             (MouseButton::Left, Hit::NewTab) => Some(BarAction::NewTab),
             (MouseButton::Left, Hit::Settings) => Some(BarAction::Settings),
             (MouseButton::Left, Hit::Dropdown) => {
@@ -1755,7 +1795,11 @@ impl App {
         if hit != w.tab_hover {
             w.tab_hover = hit;
             w.window.request_redraw();
+            if let Hit::Chip(index) = hit {
+                self.chip_hint(index);
+            }
         }
+        let Some(w) = &mut self.window else { return };
         let over_bar = hit != Hit::None;
         let under = if over_bar { None } else { w.pane_at(x, y) };
         let target = w.capture.or(under);
@@ -1774,7 +1818,7 @@ impl App {
         let on_link = under
             .and_then(|id| w.tabs[w.active_tab].pane(id))
             .is_some_and(|p| p.hovered.is_some());
-        w.set_cursor_icon(if matches!(hit, Hit::Close(_) | Hit::NewTab | Hit::Dropdown | Hit::Settings) {
+        w.set_cursor_icon(if matches!(hit, Hit::Close(_) | Hit::NewTab | Hit::Dropdown | Hit::Settings | Hit::Chip(_)) {
             CursorIcon::Pointer
         } else if over_bar {
             CursorIcon::Default
@@ -1968,7 +2012,7 @@ impl TermWindow {
         let show_bar = match config.tab_bar.show {
             ShowTabBar::Always => true,
             ShowTabBar::Never => false,
-            ShowTabBar::Auto => self.tabs.len() > 1,
+            ShowTabBar::Auto => self.tabs.len() > 1 || !self.port_chips().is_empty(),
         };
         let mut area = Rect::new(0.0, 0.0, width, height);
         self.tab_bar = None;
@@ -2102,10 +2146,12 @@ impl TermWindow {
 
     fn bar_layout(&self, config: &Config, infos: &[TabInfo]) -> Option<tabbar::BarLayout> {
         let bar = self.tab_bar?;
+        let chips: Vec<tabbar::Chip> = self.port_chips().into_iter().map(|(chip, _)| chip).collect();
         Some(tabbar::layout(
             config.tab_bar.style,
             bar,
             infos,
+            &chips,
             self.renderer.cell_metrics(),
             self.scale_factor as f32,
             config.tab_bar.max_title_length,
@@ -2362,6 +2408,8 @@ impl TermWindow {
                 integration::progress_phase(),
                 &mut items,
             );
+            let chips: Vec<tabbar::Chip> = self.port_chips().into_iter().map(|(chip, _)| chip).collect();
+            tabbar::draw_chips(&layout, &chips, self.tab_hover, theme, m, &mut items);
             // An indeterminate progress bar's stripe keeps moving.
             animating |= infos.iter().any(|t| t.progress.is_some_and(|p| p.fraction.is_none()));
         }
@@ -2786,6 +2834,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Remote(request) => self.remote_request(request),
             UserEvent::Edit(id, event) => self.edit_event(id, event),
+            UserEvent::Forward(pane, event) => {
+                if self.select_window_of_pane(pane) {
+                    self.forward_event(pane, event);
+                }
+            }
         }
     }
 
@@ -2841,9 +2894,10 @@ impl App {
     fn window_timers(&mut self, now: Instant) -> Option<Instant> {
         self.flush_dropped();
         let blink = self.blink_interval();
+        let listening_wake = self.window.as_mut().and_then(|w| w.refresh_listening(&self.config, now));
         let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
         let search_wake = self.window.as_mut().and_then(|w| w.refresh_search(now));
-        let mut wake = [self.expire_files(now), progress_wake, search_wake].into_iter().flatten().min();
+        let mut wake = [self.expire_files(now), progress_wake, search_wake, listening_wake].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

@@ -38,6 +38,8 @@ pub enum Purpose {
     Paste { pane: PaneId, text: String },
     /// A question about a server file being edited locally.
     Edit(u64, super::editing::Question),
+    /// A port forward typed in (`reverse` = from the server to here).
+    Forward { pane: PaneId, reverse: bool },
 }
 
 /// Transfers whose destination name is taken, asked about one at a time.
@@ -757,6 +759,7 @@ impl App {
         let remote_of = |w: &mut TermWindow, pane: PaneId| w.panel_for(pane).map(|p| p.remote.clone());
         match dialog.purpose {
             Purpose::Edit(id, question) => self.edit_answer(id, question, answer),
+            Purpose::Forward { pane, reverse } => self.forward_answer(pane, reverse, answer),
             Purpose::Delete { pane, paths } => {
                 if answer.button != Some(0) {
                     return;

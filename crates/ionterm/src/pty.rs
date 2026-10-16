@@ -240,6 +240,11 @@ impl Pty {
         }
     }
 
+    /// The process the pane started (the shell).
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     pub fn is_running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }

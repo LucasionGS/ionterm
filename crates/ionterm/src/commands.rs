@@ -47,6 +47,7 @@ const COMMANDS: &[(&str, &str, &str, char)] = &[
     ("copy_last_command_output", "Copy last command's output", "Shell", '\u{F018F}'),
     ("ssh_connect", "Connect to SSH host…", "SSH", '\u{F08C0}'),
     ("toggle_files", "Remote files panel", "SSH", '\u{F024B}'),
+    ("forward_port", "Forward a port…", "SSH", '\u{F04E1}'),
     ("copy", "Copy selection", "Clipboard", '\u{F018F}'),
     ("copy_cwd", "Copy current directory", "Clipboard", '\u{F024B}'),
     ("open_cwd", "Open current directory in file manager", "Shell", '\u{F0770}'),

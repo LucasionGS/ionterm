@@ -85,6 +85,11 @@ pub struct Pane {
     /// It was started for a program (`-e`, an editor, a pager) rather than
     /// the shell, so it isn't reopened with the session.
     pub runs_command: bool,
+    /// Port forwards over its connection; cancelled when the pane goes.
+    pub forwards: crate::forward::Forwards,
+    /// TCP ports its programs listen on (local panes), refreshed while its
+    /// tab shows.
+    pub listening: Vec<u16>,
 }
 
 /// A pane's progress: reported by the program (OSC 9;4), or read from a
@@ -130,6 +135,7 @@ impl Pane {
                 zmodem: zmodem.clone(),
             },
         )?;
+        let forwards = crate::forward::Forwards::new(connection.clone().filter(|c| c.managed));
         Ok(Self {
             id,
             term,
@@ -158,6 +164,8 @@ impl Pane {
             progress: None,
             command: None,
             runs_command: !config.command.is_empty(),
+            forwards,
+            listening: Vec::new(),
         })
     }
 
@@ -275,6 +283,11 @@ impl Pane {
             },
         )?;
         Ok(())
+    }
+
+    /// The process the pane started (its shell).
+    pub fn child_pid(&self) -> Option<u32> {
+        self.pty.child_pid()
     }
 
     /// Whether the pane's current program still runs (a "child exited"

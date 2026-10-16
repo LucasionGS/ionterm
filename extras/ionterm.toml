@@ -75,7 +75,8 @@ trail = false                        # a short fading streak behind the cursor w
 #
 # Windows
 # "ctrl+shift+n" = "new_os_window"
-# Unbound by default: move_tab_to_new_window, move_tab_to_window (picks one)
+# Unbound by default: move_tab_to_new_window, move_tab_to_window (picks one),
+# forward_port (picks a port of the server to forward, in SSH tabs)
 #
 # Panes
 # "ctrl+shift+enter" = "new_split"           (splits along the longer side)

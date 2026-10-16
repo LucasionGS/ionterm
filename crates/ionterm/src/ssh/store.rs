@@ -247,6 +247,7 @@ pub fn save_extras(
     color: Option<Rgb>,
     icon: &str,
     group: &str,
+    forwards: &[String],
 ) -> std::io::Result<()> {
     let dir = config_dir().ok_or_else(|| std::io::Error::other("no config directory"))?;
     let path = dir.join(HOSTS_FILE);
@@ -282,6 +283,11 @@ pub fn save_extras(
     set("color", color.map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)));
     set("icon", (!icon.is_empty()).then(|| icon.to_string()));
     set("group", (!group.is_empty()).then(|| group.to_string()));
+    if forwards.is_empty() {
+        entry.remove("forwards");
+    } else {
+        entry.insert("forwards", toml_edit::value(forwards.iter().collect::<toml_edit::Array>()));
+    }
     if !entry.is_empty() {
         hosts.insert(alias, toml_edit::Item::Table(entry));
     }

@@ -34,6 +34,10 @@ Commands:
                                   Move a pane's tab to a new window, or window N of \"ls\"
   move-pane [-p PANE] (--new-tab | --new-window | --tab N [--window N])
                                   Move a pane to its own tab or window, or into tab N as a split
+  forward [-p PANE] SPEC          Forward a port over an SSH tab's connection: 3000, 8080:80,
+                                  8080:db:5432, or R 9000 the other way; prints the local port
+  unforward [-p PANE] [R ]PORT    Stop forwarding a port
+  forwards [-p PANE]              List a pane's forwards
   focus -p PANE                   Show a pane and give it the keyboard
   close [-p PANE]                 Close a pane
   set-title [-p PANE] [title]     Name a pane's tab (no title goes back to automatic)

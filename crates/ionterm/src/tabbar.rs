@@ -92,6 +92,8 @@ pub enum Hit {
     Dropdown,
     /// The gear at the far end: settings.
     Settings,
+    /// A port chip (a forward, or a port a program listens on).
+    Chip(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -112,6 +114,20 @@ pub struct BarLayout {
     pub dropdown: Option<Rect>,
     /// The settings gear, at the far end of the bar.
     pub settings: Option<Rect>,
+    /// Port chips, left of the gear, in the order given.
+    pub chips: Vec<Rect>,
+}
+
+/// A port chip: a forward over SSH, or a port a local program listens on.
+pub struct Chip {
+    pub icon: char,
+    pub label: String,
+}
+
+impl Chip {
+    fn width(&self, m: CellMetrics) -> f32 {
+        ((text_columns(&self.label) + 4) as f32 * m.width).round()
+    }
 }
 
 /// The rename in progress, drawn in place of a tab's title.
@@ -127,14 +143,41 @@ pub fn bar_height(style: TabBarStyleConfig, m: CellMetrics) -> f32 {
     }
 }
 
-pub fn layout(style: TabBarStyleConfig, bar: Rect, tabs: &[TabInfo], m: CellMetrics, scale: f32, max_title: usize) -> BarLayout {
-    match style {
-        TabBarStyleConfig::Tabs => layout_tabs(bar, tabs.len(), m, scale),
+#[allow(clippy::too_many_arguments)]
+pub fn layout(style: TabBarStyleConfig, bar: Rect, tabs: &[TabInfo], chips: &[Chip], m: CellMetrics, scale: f32, max_title: usize) -> BarLayout {
+    let mut layout = match style {
+        TabBarStyleConfig::Tabs => layout_tabs(bar, tabs.len(), chips_width(chips, m, scale), m, scale),
         _ => layout_powerline(bar, tabs, m, max_title),
-    }
+    };
+    // Right to left from the gear.
+    let gap = (4.0 * scale).round();
+    let (mut right, y, height) = match layout.settings {
+        Some(gear) => (gear.x - gap, gear.y, gear.height),
+        None => (bar.x + bar.width - gap, bar.y, bar.height),
+    };
+    let mut rects: Vec<Rect> = chips
+        .iter()
+        .rev()
+        .map(|chip| {
+            let width = chip.width(m);
+            right -= width;
+            let rect = Rect::new(right, y, width, height);
+            right -= gap;
+            rect
+        })
+        .collect();
+    rects.reverse();
+    layout.chips = rects;
+    layout
 }
 
-fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout {
+/// The room chips take, gaps included.
+fn chips_width(chips: &[Chip], m: CellMetrics, scale: f32) -> f32 {
+    let gap = (4.0 * scale).round();
+    chips.iter().map(|c| c.width(m) + gap).sum()
+}
+
+fn layout_tabs(bar: Rect, count: usize, reserved: f32, m: CellMetrics, scale: f32) -> BarLayout {
     let px = |v: f32| (v * scale).round();
     let top = px(6.0);
     let side = px(6.0);
@@ -144,7 +187,7 @@ fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout
     let button = height;
     let dropdown_width = (button * 0.7).round();
     let gear = Rect::new(bar.x + bar.width - side - (button - px(4.0)), y + px(2.0), button - px(4.0), button - px(4.0));
-    let available = bar.width - 2.0 * side - button - dropdown_width - gap - gear.width - gap;
+    let available = bar.width - 2.0 * side - button - dropdown_width - gap - gear.width - gap - reserved;
     let max_width = m.width * 30.0;
     let min_width = m.width * 8.0;
     let width = (available / count.max(1) as f32 - gap).clamp(min_width, max_width).floor();
@@ -182,6 +225,7 @@ fn layout_tabs(bar: Rect, count: usize, m: CellMetrics, scale: f32) -> BarLayout
         new_tab: Some(new_tab),
         dropdown: Some(Rect::new(new_tab.x + new_tab.width, new_tab.y, dropdown_width, new_tab.height)),
         settings: Some(gear),
+        chips: Vec::new(),
     }
 }
 
@@ -211,6 +255,7 @@ fn layout_powerline(bar: Rect, tabs: &[TabInfo], m: CellMetrics, max_title: usiz
         new_tab: None,
         dropdown: None,
         settings: Some(Rect::new(bar.x + bar.width - 3.0 * m.width, bar.y, 3.0 * m.width, bar.height)),
+        chips: Vec::new(),
     }
 }
 
@@ -264,6 +309,9 @@ pub fn hit(layout: &BarLayout, x: f32, y: f32) -> Hit {
     }
     if layout.settings.is_some_and(|r| r.contains(x, y)) {
         return Hit::Settings;
+    }
+    if let Some(i) = layout.chips.iter().position(|r| r.contains(x, y)) {
+        return Hit::Chip(i);
     }
     for (i, slot) in layout.tabs.iter().enumerate() {
         if slot.close.is_some_and(|r| r.contains(x, y)) {
@@ -512,6 +560,40 @@ fn draw_tabs(
 /// The gear on the settings button and tab.
 pub const SETTINGS_ICON: char = '\u{F013}';
 
+/// Port chips: a soft pill with an icon and the port, brighter under the
+/// mouse.
+pub fn draw_chips(layout: &BarLayout, chips: &[Chip], hover: Hit, theme: &Theme, m: CellMetrics, out: &mut Vec<ChromeItem>) {
+    let accent = theme.tab_bar.active_background.0;
+    let foreground = theme.foreground.0;
+    for (i, (chip, rect)) in chips.iter().zip(&layout.chips).enumerate() {
+        let hovered = hover == Hit::Chip(i);
+        let pill = Rect::new(rect.x, rect.y + (rect.height * 0.12).round(), rect.width, (rect.height * 0.76).round());
+        out.push(ChromeItem::RoundedRect {
+            rect: [pill.x, pill.y, pill.width, pill.height],
+            radius: (pill.height / 2.0).round(),
+            top_only: false,
+            color: accent,
+            alpha: if hovered { 0.35 } else { 0.18 },
+        });
+        let y = pill.y + ((pill.height - m.height) / 2.0).round();
+        let x = pill.x + m.width;
+        out.push(ChromeItem::Text {
+            text: chip.icon.to_string(),
+            x,
+            y,
+            color: accent,
+            bold: false,
+        });
+        out.push(ChromeItem::Text {
+            text: chip.label.clone(),
+            x: x + 2.0 * m.width,
+            y,
+            color: if hovered { foreground } else { mix(foreground, theme.background.0, 0.15) },
+            bold: false,
+        });
+    }
+}
+
 /// kitty-style Powerline tabs: the separator glyph in the tab's colour over
 /// the next tab's.
 #[allow(clippy::too_many_arguments)]
@@ -676,7 +758,7 @@ mod tests {
     #[test]
     fn tabs_share_space_and_hit_test() {
         let bar = Rect::new(0.0, 0.0, 800.0, 35.0);
-        let layout = layout_tabs(bar, 3, metrics(), 1.0);
+        let layout = layout_tabs(bar, 3, 0.0, metrics(), 1.0);
         assert_eq!(layout.tabs.len(), 3);
         let first = &layout.tabs[0];
         assert!(first.rect.width <= 9.0 * 30.0);

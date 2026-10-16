@@ -26,6 +26,12 @@ pub enum PaletteAction {
     MoveTab(Option<WindowId>),
     /// Move the active pane somewhere else.
     MovePane(PaneTarget),
+    /// Forward a port over the active pane's connection (`forward::Spec` text).
+    Forward(String),
+    /// Type a forward in; `true` = from the server to here.
+    ForwardOther(bool),
+    /// Stop the forward listening on this port (on the server when `true`).
+    Unforward(bool, u16),
 }
 
 impl PaletteAction {
@@ -87,11 +93,12 @@ impl Palette {
         }
     }
 
-    /// A list to pick a destination from (moving tabs and panes).
-    pub fn chooser(items: Vec<PaletteItem>, placeholder: &'static str) -> Self {
+    /// A list to pick from (where to move a tab, a port to forward), with
+    /// what Enter does in the footer.
+    pub fn chooser(items: Vec<PaletteItem>, placeholder: &'static str, footer: &'static str) -> Self {
         Self {
             placeholder,
-            footer: "↵ move   esc close",
+            footer,
             ..Self::new(items, None)
         }
     }

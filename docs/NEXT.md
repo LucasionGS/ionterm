@@ -77,8 +77,10 @@ crates/ionterm/          the app
                          integration.rs (prompt jumps, output copy/select, failed marks, tab progress), hints.rs (hints overlay),
                          settings.rs (settings tab, config writes, $EDITOR in the tab),
                          windows.rs (several windows: the current/parked switch, opening and closing, moving tabs and panes, tab drag-out),
-                         editing.rs (ionterm-edit and the panel's Edit: sudo/password/conflict dialogs, the editor tab, writing back on save)
+                         editing.rs (ionterm-edit and the panel's Edit: sudo/password/conflict dialogs, the editor tab, writing back on save),
+                         forwards.rs (port forward picker, start/stop, saved forwards, tab bar chips, local listening ports)
   edit.rs                editing server files: the probe/read/write scripts (in-place writes, conflict check, sudo), local copies
+  forward.rs             port forwards (ssh -O forward/cancel, Windows tunnels), specs, the server's and local listening ports
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
   remote.rs              `ionterm @`: socket, client, request parsing (commands run in app/remote.rs)
@@ -140,6 +142,7 @@ Patterns to follow:
   ```
   The runtime dir must be short (Unix sockets max 108 bytes, so not the scratchpad). Use `setsid -f`: background jobs of a finished command get killed. Set `[window] opacity = 1.0` in the test config, or windows stacked by cage show through each other. cage has no input devices, so keys and the mouse can't be tested there; drive through `ionterm @` (`action` runs any keybinding action).
 - **Fake ssh + fake editor** work inside the cage harness: put the fake `ssh` (below) first in `PATH` and point both `EDITOR` and `VISUAL` at a script that appends a line and exits, then `ionterm @ send-text -p 1 'ionterm-edit file\n'` runs the whole round trip. Claude Code's own environment sets `GIT_EDITOR=true` (and `VISUAL=nvim`), which leak into tests unless overridden.
+- **A throwaway sshd** tests anything that needs a real ssh master (forwards): `/usr/bin/sshd -f <config>` as your user with `ListenAddress 127.0.0.1`, `Port 22220`, a scratch `HostKey`/`AuthorizedKeysFile`, `UsePAM no`, `StrictModes no`, and `ForceCommand` pointing at a wrapper that sets a scratch `HOME` and runs `bash --norc` (or `$SSH_ORIGINAL_COMMAND`), so nothing lands in the user's home or fish history. Give the host `integration = false` in the scratch `hosts.toml`, so the bootstrap can't install terminfo into the real `~/.terminfo`. Set `XDG_CACHE_HOME` too, or the master's socket goes to the user's `~/.cache/ionterm/ssh`. `ionserver` didn't resolve in the last session.
 - **gamescope's headless backend segfaults when a second Vulkan window opens** (three core dumps), so it's no good for multi-window tests.
 
 **Driving ionterm through Hyprland: always use `scripts/drive.sh`.** Claude Code runs inside a terminal of the user's (now their ionterm), which is normally the focused window. A dispatch with an empty or stale pid (`window = "pid:"`) can land on it, and test keys like ctrl+d, Escape or Return then hit Claude Code itself. A previous session lost its own terminal this way. `drive.sh` only sends keys to, or kills, the window it launched, after checking that it is a live `ionterm` window and not an ancestor of the shell. Never use `pkill`/`killall`, `killactive`, or a dispatch without a verified `window =`.
@@ -206,5 +209,5 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
   - Windows polish (own titlebar, installer).
   - `ionterm @` over a Windows named pipe (Unix socket done: `remote.rs`, `app/remote.rs`).
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
-- **v0.5 (chosen by the user, see PLAN.md):** ~~tabs between windows~~ (done), ~~edit remote files locally~~ (done), port forwards from the tab, command blocks you can act on. The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
+- **v0.5 (chosen by the user, see PLAN.md):** ~~tabs between windows~~ (done), ~~edit remote files locally~~ (done), ~~port forwards from the tab~~ (done), command blocks you can act on. The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
 - **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there, and so do command info on hover, clear scrollback and `ionterm @ ls` (remote directory). Reconnect after a dropped connection is still only tested against the fake-ssh setup.

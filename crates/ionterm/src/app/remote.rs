@@ -53,6 +53,7 @@ impl App {
                 return (0, format!("ionterm {}\n{exe}\n", crate::VERSION));
             }
             "move-tab" => (&["--new-window"], &["-p", "--pane", "--window"]),
+            "forward" | "unforward" | "forwards" => (&[], &["-p", "--pane"]),
             "move-pane" => (&["--new-tab", "--new-window"], &["-p", "--pane", "--tab", "--window"]),
             "send-text" | "get-text" | "focus" | "close" | "set-title" | "action" => (&["-a", "--all"], &["-p", "--pane"]),
             "new-tab" => (&[], &["--cwd", "--title"]),
@@ -108,6 +109,9 @@ impl App {
                 (0, String::new())
             }
             "move-tab" => self.remote_move_tab(pane, &parsed),
+            "forward" => self.remote_forward(pane, &parsed.words.join(" ")),
+            "unforward" => self.remote_unforward(pane, &parsed.words.join(" ")),
+            "forwards" => self.remote_forwards(pane),
             "move-pane" => self.remote_move_pane(pane, &parsed),
             "set-title" => {
                 let title = parsed.words.join(" ");
@@ -211,6 +215,55 @@ impl App {
             reply: Some(request),
             ..NewWindow::new(content)
         });
+    }
+
+    /// Starts a forward and waits for it: scripts get the local port.
+    fn remote_forward(&mut self, pane: PaneId, text: &str) -> Answer {
+        let spec = match crate::forward::Spec::parse(text) {
+            Ok(spec) => spec,
+            Err(message) => return bad(format!("{message} Usage: ionterm @ forward [-p PANE] [R ]PORT|LOCAL:PORT|LOCAL:HOST:PORT")),
+        };
+        let Some(w) = &mut self.window else { return failed("The window is closing.") };
+        let Some(p) = w.tabs.iter_mut().find_map(|t| t.pane_mut(pane)) else { return failed("That pane is gone.") };
+        let Some(connection) = p.connection.clone().filter(|c| c.managed) else {
+            return failed("Port forwards work in SSH tabs ionterm opened.");
+        };
+        match crate::forward::start(&connection, spec) {
+            Ok(active) => {
+                let listen = active.spec.listen;
+                p.forwards.push(active);
+                w.refresh_chips(&self.config);
+                (0, format!("{listen}\n"))
+            }
+            Err(message) => failed(message),
+        }
+    }
+
+    fn remote_unforward(&mut self, pane: PaneId, text: &str) -> Answer {
+        let text = text.trim();
+        let (reverse, port) = match text.strip_prefix(['R', 'r']) {
+            Some(rest) => (true, rest.trim_start_matches([' ', ':'])),
+            None => (false, text),
+        };
+        let Ok(listen) = port.parse() else { return bad("Usage: ionterm @ unforward [-p PANE] [R ]PORT") };
+        let known = self
+            .window
+            .as_ref()
+            .and_then(|w| w.tabs.iter().find_map(|t| t.pane(pane)))
+            .is_some_and(|p| p.forwards.list.iter().any(|a| a.spec.reverse == reverse && a.spec.listen == listen));
+        if !known {
+            return failed(format!("Nothing forwards port {listen} there."));
+        }
+        self.stop_forward(pane, reverse, listen);
+        (0, String::new())
+    }
+
+    /// One line per forward, as `forward` takes them.
+    fn remote_forwards(&self, pane: PaneId) -> Answer {
+        let Some(w) = &self.window else { return failed("The window is closing.") };
+        let Some(p) = w.tabs.iter().find_map(|t| t.pane(pane)) else { return failed("That pane is gone.") };
+        let lines: String = p.forwards.list.iter().map(|a| format!("{}\n", a.spec.text())).collect();
+        (0, lines)
     }
 
     /// The window numbered `text` in `ls`.

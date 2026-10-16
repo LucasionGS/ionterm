@@ -339,6 +339,8 @@ impl App {
             search: None,
             split_drag: None,
             trail: trail::Trail::default(),
+            listening_checked: None,
+            chips_shown: false,
         };
         w.carry_in(carried);
         if self.drops.is_none() {
@@ -628,7 +630,7 @@ impl App {
                 action: PaletteAction::MoveTab(Some(id)),
             });
         }
-        self.show_picker(Palette::chooser(items, "Move this tab to…"));
+        self.show_picker(Palette::chooser(items, "Move this tab to…", "↵ move   esc close"));
     }
 
     /// "Move pane to…": a tab or window of its own, or any other tab.
@@ -670,7 +672,7 @@ impl App {
                 });
             }
         }
-        self.show_picker(Palette::chooser(items, "Move this pane to…"));
+        self.show_picker(Palette::chooser(items, "Move this pane to…", "↵ move   esc close"));
     }
 
     fn show_picker(&mut self, picker: Palette) {

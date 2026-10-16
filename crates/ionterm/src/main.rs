@@ -10,6 +10,7 @@ mod edit;
 mod editor;
 mod hints;
 mod files;
+mod forward;
 mod input;
 mod layout;
 mod links;

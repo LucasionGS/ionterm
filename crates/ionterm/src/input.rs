@@ -528,6 +528,8 @@ pub enum Action {
     MoveTabToNewWindow,
     /// Picks another window to move the active tab to.
     MoveTabToWindow,
+    /// Picks a port of the server to forward (SSH tabs).
+    ForwardPort,
     // Panes
     /// Splits the active pane along its longer side.
     NewSplit,
@@ -625,6 +627,7 @@ impl Action {
             "new_os_window" | "open_window" => Self::NewWindow,
             "move_tab_to_new_window" | "detach_tab" => Self::MoveTabToNewWindow,
             "move_tab_to_window" => Self::MoveTabToWindow,
+            "forward_port" | "port_forward" => Self::ForwardPort,
             "move_pane_to_new_tab" | "detach_window" => Self::MovePaneToNewTab,
             "move_pane_to_new_window" | "detach_pane" => Self::MovePaneToNewWindow,
             "move_pane" | "move_pane_to" => Self::MovePane,

@@ -12,7 +12,7 @@ use crate::tabbar::{mix, readable_on, truncate};
 use crate::textfield::{Edit, TextField};
 use crate::theme::Theme;
 
-const LABELS: [&str; FIELDS] = ["Name", "Address", "User", "Port", "Key file", "Jump host", "Icon", "Group"];
+const LABELS: [&str; FIELDS] = ["Name", "Address", "User", "Port", "Key file", "Jump host", "Icon", "Group", "Port forwards"];
 const PLACEHOLDERS: [&str; FIELDS] = [
     "myserver",
     "203.0.113.10 or example.com",
@@ -22,8 +22,10 @@ const PLACEHOLDERS: [&str; FIELDS] = [
     "none",
     "default server icon",
     "none",
+    "3000, 8080:80, 8080:db:5432, R 9000",
 ];
-const FIELDS: usize = 8;
+const FIELDS: usize = 9;
+const FORWARDS: usize = 8;
 /// Fields that are ssh settings (the rest are ionterm's own).
 const SSH_FIELDS: usize = 6;
 const PORT: usize = 3;
@@ -91,6 +93,7 @@ impl Editor {
             form.proxy_jump,
             extras.and_then(|e| e.icon.clone()).unwrap_or_default(),
             extras.and_then(|e| e.group.clone()).unwrap_or_default(),
+            extras.map(|e| e.forwards.join(", ")).unwrap_or_default(),
         ]
         .map(TextField::new);
         editor.color = extras.and_then(|e| e.color).map(|c| c.0);
@@ -136,6 +139,17 @@ impl Editor {
 
     pub fn group(&self) -> String {
         self.values[7].text().trim().to_string()
+    }
+
+    /// The port forwards to set up on connecting, checked.
+    pub fn forwards(&self) -> Result<Vec<String>, String> {
+        self.values[FORWARDS]
+            .text()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|text| crate::forward::Spec::parse(text).map(|spec| spec.text()))
+            .collect()
     }
 
     /// Tab order: editable fields, the colour row, then the buttons.

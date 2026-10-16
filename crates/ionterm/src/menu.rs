@@ -13,6 +13,8 @@ pub enum MenuCommand {
     Duplicate,
     /// Opens the SSH tab's file panel.
     Files,
+    /// Picks a port of the server to forward.
+    Forward,
     MoveToNewWindow,
     /// Picks another window to move the tab to.
     MoveToWindow,
@@ -81,9 +83,9 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     let colors = swatch_colors(theme);
     let swatch_row_width = px(8.0) + (colors.len() + 1) as f32 * step - px(6.0) + px(8.0);
     let width = (m.width * 24.0).max(px(220.0)).max(swatch_row_width + 2.0 * pad);
-    // Rename, duplicate, move ×2, (files), colour label, swatches, close,
-    // close others.
-    let files = f32::from(u8::from(menu.ssh));
+    // Rename, duplicate, move ×2, (files, forward), colour label, swatches,
+    // close, close others.
+    let files = 2.0 * f32::from(u8::from(menu.ssh));
     let rows = 8.0 + files;
     let height = rows * row + 2.0 * pad + px(8.0);
     // Keep the menu inside the window.
@@ -103,6 +105,7 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     ];
     if menu.ssh {
         entries.push((MenuCommand::Files, item(4.0, 0.0), "Files…"));
+        entries.push((MenuCommand::Forward, item(5.0, 0.0), "Forward a port…"));
     }
     // Then the "Colour" label, and the swatches.
     let color_label = item(4.0 + files, 0.0);
