@@ -332,6 +332,9 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // The stand-in sudo is a shebang script found through a `:`-separated
+    // PATH, which only works where the shell is a real Unix one.
+    #[cfg(unix)]
     #[test]
     fn goes_through_sudo() {
         let (_, dir) = local();
@@ -344,7 +347,6 @@ mod tests {
              if [ $s = 1 ]; then IFS= read -r pw; [ \"$pw\" = pw ] || { echo 'Sorry, try again.' >&2; exit 1; }; fi\nexec \"$@\"\n",
         )
         .unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
