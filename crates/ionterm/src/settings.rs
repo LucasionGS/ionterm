@@ -1,16 +1,21 @@
 //! The settings page, shown in its own tab: simple settings as controls
 //! (switches, choices, steppers, text, a font picker) that write straight
-//! to `ionterm.toml`, and buttons that open the config files in `$EDITOR`.
+//! to `ionterm.toml`, buttons that open the config files in `$EDITOR`, and
+//! a searchable cheatsheet of every shortcut.
 //!
 //! Like the other widgets: `layout()` is pure geometry, `hit()` finds what's
 //! under the mouse, `draw()` builds `ChromeItem`s, and keys and clicks
 //! return a `Request` for the app to carry out.
 
+use std::collections::HashMap;
+
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use crate::cheatsheet::{self, Line};
 use crate::config::{Config, SettingValue};
+use crate::input::{Action, KeyCombo};
 use crate::layout::Rect;
 use crate::tabbar::{mix, readable_on, truncate};
 use crate::textfield::{Edit, TextField};
@@ -52,6 +57,8 @@ pub struct Section {
     pub title: &'static str,
     pub icon: char,
     pub settings: &'static [Setting],
+    /// Shows the shortcuts cheatsheet instead of settings.
+    pub shortcuts: bool,
 }
 
 const fn setting(section: &'static str, key: &'static str, label: &'static str, help: &'static str, control: Control) -> Setting {
@@ -87,6 +94,7 @@ pub const SECTIONS: &[Section] = &[
             setting("window", "padding", "Padding", "Space around the text.", Control::Number { min: 0.0, max: 40.0, step: 1.0, decimals: 0, unit: "px" }),
             setting("window", "decorations", "Window decorations", "Auto: none under Hyprland, which draws its own borders.", Control::Choice(DECORATIONS)),
         ],
+        shortcuts: false,
     },
     Section {
         title: "Tab bar",
@@ -97,6 +105,7 @@ pub const SECTIONS: &[Section] = &[
             setting("tab_bar", "show", "Show", "When the bar is visible.", Control::Choice(TAB_SHOW)),
             setting("tab_bar", "max_title_length", "Title length", "Longest tab title in the Powerline styles.", Control::Number { min: 8.0, max: 80.0, step: 1.0, decimals: 0, unit: "" }),
         ],
+        shortcuts: false,
     },
     Section {
         title: "Terminal",
@@ -115,6 +124,7 @@ pub const SECTIONS: &[Section] = &[
             setting("notifications", "command_done_after", "Notify after", "Announce commands that ran this long when you're in another tab or window; 0 turns it off.", Control::Number { min: 0.0, max: 600.0, step: 5.0, decimals: 0, unit: "s" }),
             setting("notifications", "from_programs", "Program notifications", "Let programs pop up desktop notifications (OSC 9 and 777).", Control::Toggle),
         ],
+        shortcuts: false,
     },
     Section {
         title: "Files",
@@ -125,6 +135,13 @@ pub const SECTIONS: &[Section] = &[
             setting("files", "panel_width", "File panel width", "In columns.", Control::Number { min: 24.0, max: 120.0, step: 2.0, decimals: 0, unit: "cols" }),
             setting("hints", "open_file", "Open files with", "For hints (ctrl+shift+e): {path} {line} {col}; empty uses $EDITOR in a new tab.", Control::Text { placeholder: "$EDITOR in a new tab" }),
         ],
+        shortcuts: false,
+    },
+    Section {
+        title: "Shortcuts",
+        icon: '\u{F030C}',
+        settings: &[],
+        shortcuts: true,
     },
     Section {
         title: "Config files",
@@ -135,6 +152,7 @@ pub const SECTIONS: &[Section] = &[
             setting("", "", "SSH config", "~/.ssh/config: your own hosts.", Control::Edit(FileKind::SshConfig)),
             setting("", "", "ionterm's SSH hosts", "~/.ssh/config.d/ionterm: hosts added in ionterm.", Control::Edit(FileKind::SshIonterm)),
         ],
+        shortcuts: false,
     },
 ];
 
@@ -251,6 +269,8 @@ pub enum Target {
     Button(usize),
     Reset(usize),
     PickerRow(usize),
+    /// The cheatsheet's search field.
+    Filter,
 }
 
 pub struct FontPicker {
@@ -290,6 +310,10 @@ pub struct SettingsPage {
     pub scroll: usize,
     /// The text being typed into a text setting.
     pub typing: Option<TextField>,
+    /// What the cheatsheet is narrowed to.
+    pub shortcut_filter: TextField,
+    /// The keybindings in effect, for the cheatsheet.
+    pub bindings: HashMap<KeyCombo, Action>,
     pub picker: Option<FontPicker>,
     pub hover: Option<Target>,
     /// A config file is open in the editor in this tab.
@@ -311,6 +335,8 @@ impl SettingsPage {
             focus: 0,
             scroll: 0,
             typing: None,
+            shortcut_filter: TextField::default(),
+            bindings: HashMap::new(),
             picker: None,
             hover: None,
             editing: false,
@@ -329,6 +355,38 @@ impl SettingsPage {
 
     fn settings(&self) -> &'static [Setting] {
         SECTIONS[self.section].settings
+    }
+
+    /// Whether the section shown is the cheatsheet.
+    pub fn on_shortcuts(&self) -> bool {
+        SECTIONS[self.section].shortcuts
+    }
+
+    /// The cheatsheet as filtered now.
+    pub fn shortcut_lines(&self) -> Vec<Line> {
+        cheatsheet::lines(&self.bindings, self.shortcut_filter.text())
+    }
+
+    /// Keys on the cheatsheet: up, down and the page keys scroll, Tab goes
+    /// to the next section, and the rest edit the filter.
+    fn shortcuts_key(&mut self, key: &Key, text: Option<&str>, mods: ModifiersState) {
+        let page = self.visible.max(1) as isize;
+        match key {
+            Key::Named(NamedKey::ArrowUp) => self.scroll_by(-1),
+            Key::Named(NamedKey::ArrowDown) => self.scroll_by(1),
+            Key::Named(NamedKey::PageUp) => self.scroll_by(-page),
+            Key::Named(NamedKey::PageDown) => self.scroll_by(page),
+            Key::Named(NamedKey::Tab) => self.select_section((self.section + 1) % SECTIONS.len()),
+            Key::Named(NamedKey::Escape) => {
+                self.shortcut_filter.set("");
+                self.scroll = 0;
+            }
+            _ => {
+                if self.shortcut_filter.key(key, text, mods) == Some(Edit::Changed) {
+                    self.scroll = 0;
+                }
+            }
+        }
     }
 
     fn select_section(&mut self, section: usize) {
@@ -421,6 +479,10 @@ impl SettingsPage {
             }
             return None;
         }
+        if self.on_shortcuts() {
+            self.shortcuts_key(key, text, mods);
+            return None;
+        }
         let rows = self.settings().len();
         match key {
             Key::Named(NamedKey::ArrowUp) => {
@@ -473,6 +535,9 @@ impl SettingsPage {
             return None;
         }
         let target = target?;
+        if target == Target::Filter {
+            return None;
+        }
         if !matches!(target, Target::Text(_)) {
             self.typing = None;
         }
@@ -504,7 +569,7 @@ impl SettingsPage {
                 }
             }
             Target::Reset(row) => return self.reset(row),
-            Target::PickerRow(_) => {}
+            Target::PickerRow(_) | Target::Filter => {}
         }
         None
     }
@@ -512,6 +577,10 @@ impl SettingsPage {
     /// A click at `x` in the field being typed in puts the caret there, or
     /// extends the selection to it.
     pub fn place_caret(&mut self, layout: &PageLayout, x: f32, m: CellMetrics, scale: f32, extend: bool) {
+        if let Some(filter) = layout.filter.filter(|_| self.on_shortcuts()) {
+            self.shortcut_filter.click((x - filter_text_x(filter, m, scale)) / m.width, extend);
+            return;
+        }
         let Some(typing) = &mut self.typing else { return };
         let Some(row) = layout.rows.iter().find(|r| r.index == self.focus) else { return };
         if let Some((_, r)) = row.parts.first() {
@@ -524,6 +593,9 @@ impl SettingsPage {
         if let Some(picker) = &mut self.picker {
             let max = picker.shown().len().saturating_sub(1);
             picker.scroll = (picker.scroll as isize + lines).clamp(0, max as isize) as usize;
+        } else if self.on_shortcuts() {
+            let max = self.shortcut_lines().len().saturating_sub(self.visible);
+            self.scroll = (self.scroll as isize + lines).clamp(0, max as isize) as usize;
         } else {
             let max = self.settings().len().saturating_sub(1);
             self.scroll = (self.scroll as isize + lines).clamp(0, max as isize) as usize;
@@ -574,6 +646,10 @@ pub struct PageLayout {
     /// Rows that fit; the page scrolls by rows.
     pub visible: usize,
     pub picker: Option<PickerLayout>,
+    /// The cheatsheet's search field and its first line, when it shows.
+    pub filter: Option<Rect>,
+    pub list_top: f32,
+    pub line_height: f32,
 }
 
 pub struct PickerLayout {
@@ -595,7 +671,18 @@ pub fn layout(page: &SettingsPage, area: Rect, m: CellMetrics, scale: f32) -> Pa
     let content_width = (area.x + area.width - pad - content_x).min(m.width * 100.0).max(m.width * 30.0);
     let top = area.y + pad + m.height * 2.5;
     let row_height = (m.height * 3.2).round();
-    let visible = (((area.y + area.height - pad - top) / row_height).floor() as usize).max(1);
+    let mut visible = (((area.y + area.height - pad - top) / row_height).floor() as usize).max(1);
+
+    // The cheatsheet: a search field over a list of short lines.
+    let line_height = (m.height * 1.45).round();
+    let (filter, list_top) = if SECTIONS[page.section].shortcuts {
+        let filter = Rect::new(content_x, top, content_width, (m.height * 1.6).round());
+        let list_top = filter.y + filter.height + px(12.0);
+        visible = (((area.y + area.height - pad - list_top) / line_height).floor() as usize).max(1);
+        (Some(filter), list_top)
+    } else {
+        (None, top)
+    };
 
     let settings = SECTIONS[page.section].settings;
     let rows = settings
@@ -653,7 +740,15 @@ pub fn layout(page: &SettingsPage, area: Rect, m: CellMetrics, scale: f32) -> Pa
         rows,
         visible,
         picker,
+        filter,
+        list_top,
+        line_height,
     }
+}
+
+/// Where the cheatsheet filter's text starts, after its icon.
+fn filter_text_x(filter: Rect, m: CellMetrics, scale: f32) -> f32 {
+    filter.x + (10.0 * scale).round() + 3.0 * m.width
 }
 
 /// The clickable parts of a row's control, right-aligned at `right`.
@@ -694,6 +789,9 @@ pub fn hit(layout: &PageLayout, x: f32, y: f32) -> Option<Target> {
     }
     if let Some((i, _)) = layout.nav.iter().find(|(_, r)| r.contains(x, y)) {
         return Some(Target::Nav(*i));
+    }
+    if layout.filter.is_some_and(|r| r.contains(x, y)) {
+        return Some(Target::Filter);
     }
     for row in &layout.rows {
         if let Some((target, _)) = row.parts.iter().find(|(_, r)| r.contains(x, y)) {
@@ -874,6 +972,10 @@ pub fn draw(page: &SettingsPage, layout: &PageLayout, ctx: &DrawContext, theme: 
         }
     }
 
+    if let Some(filter) = layout.filter {
+        draw_shortcuts(page, layout, filter, theme, m, scale, out);
+    }
+
     // "More below/above" hints when the section scrolls.
     if page.scroll > 0
         && let Some(first) = layout.rows.first()
@@ -956,11 +1058,94 @@ fn draw_stepper(
     }
 }
 
+/// The cheatsheet: its search field, then headings and entries, keys in a
+/// column of chips, the action's name for ionterm.toml on the right.
+fn draw_shortcuts(page: &SettingsPage, layout: &PageLayout, filter: Rect, theme: &Theme, m: CellMetrics, scale: f32, out: &mut Vec<ChromeItem>) {
+    let px = |v: f32| (v * scale).round();
+    let bg = theme.background.0;
+    let fg = theme.foreground.0;
+    let muted = mix(fg, bg, 0.45);
+    let faint = mix(fg, bg, 0.7);
+    let accent = theme.cursor.0;
+    let control_bg = mix(bg, fg, 0.1);
+    let text = |text: String, x: f32, y: f32, color: Rgb, bold: bool| ChromeItem::Text { text, x, y, color, bold };
+    let rounded = |r: Rect, radius: f32, color: Rgb| ChromeItem::RoundedRect {
+        rect: [r.x, r.y, r.width, r.height],
+        radius,
+        top_only: false,
+        color,
+        alpha: 1.0,
+    };
+
+    out.push(rounded(Rect::new(filter.x - px(1.0), filter.y - px(1.0), filter.width + px(2.0), filter.height + px(2.0)), px(7.0), accent));
+    out.push(rounded(filter, px(6.0), control_bg));
+    let y = filter.y + ((filter.height - m.height) / 2.0).round();
+    out.push(text("\u{F0349}".into(), filter.x + px(10.0), y, faint, false));
+    let filter_x = filter_text_x(filter, m, scale);
+    let cols = ((filter.x + filter.width - px(10.0) - filter_x) / m.width).max(1.0) as usize;
+    if page.shortcut_filter.is_empty() {
+        out.push(text("Search shortcuts: keys, actions or what they do".into(), filter_x, y, faint, false));
+    }
+    page.shortcut_filter.draw(filter_x, y, cols, fg, accent, true, m, scale, out);
+
+    let lines = page.shortcut_lines();
+    if lines.is_empty() {
+        out.push(text("No shortcut matches".into(), filter.x, layout.list_top, muted, false));
+        return;
+    }
+    let total_cols = (filter.width / m.width) as usize;
+    let key_cols = lines
+        .iter()
+        .map(|line| match line {
+            Line::Entry { keys, .. } => text_columns(keys),
+            Line::Heading(_) => 0,
+        })
+        .max()
+        .unwrap_or(0)
+        .min(total_cols / 2)
+        + 2;
+    let what_x = filter.x + (key_cols as f32 + 1.0) * m.width;
+    for (slot, line) in lines.iter().skip(page.scroll).take(layout.visible).enumerate() {
+        let top = layout.list_top + slot as f32 * layout.line_height;
+        let y = top + ((layout.line_height - m.height) / 2.0).round();
+        match line {
+            Line::Heading(title) => out.push(text((*title).into(), filter.x, y, accent, true)),
+            Line::Entry { keys, what, name } => {
+                if keys.is_empty() {
+                    out.push(text("not bound".into(), filter.x + m.width, y, faint, false));
+                } else {
+                    let shown = truncate(keys, key_cols - 2);
+                    let chip = Rect::new(filter.x, top + px(2.0), (text_columns(&shown) as f32 + 2.0) * m.width, layout.line_height - px(4.0));
+                    out.push(rounded(chip, px(5.0), control_bg));
+                    out.push(text(shown, filter.x + m.width, y, fg, false));
+                }
+                let name_cols = text_columns(name);
+                let what_cols = total_cols.saturating_sub(key_cols + 1);
+                // The action's name goes on the right when there's room.
+                let room = what_cols > text_columns(what) + name_cols + 4;
+                out.push(text(truncate(what, what_cols), what_x, y, if keys.is_empty() { muted } else { fg }, false));
+                if room && !name.is_empty() {
+                    out.push(text((*name).into(), filter.x + filter.width - name_cols as f32 * m.width, y, faint, false));
+                }
+            }
+        }
+    }
+
+    // "More below/above" hints.
+    let right = filter.x + filter.width - m.width;
+    if page.scroll > 0 {
+        out.push(text("\u{F0143}".into(), right, layout.list_top - m.height, faint, false));
+    }
+    if page.scroll + layout.visible < lines.len() {
+        out.push(text("\u{F0140}".into(), right, layout.list_top + layout.visible as f32 * layout.line_height, faint, false));
+    }
+}
+
 /// The row a target belongs to.
 fn target_row(target: Target) -> Option<usize> {
     match target {
         Target::Row(r) | Target::Toggle(r) | Target::Choice(r, _) | Target::Minus(r) | Target::Plus(r) | Target::Text(r) | Target::Button(r) | Target::Reset(r) => Some(r),
-        Target::Nav(_) | Target::PickerRow(_) => None,
+        Target::Nav(_) | Target::PickerRow(_) | Target::Filter => None,
     }
 }
 

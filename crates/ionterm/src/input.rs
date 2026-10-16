@@ -506,7 +506,7 @@ fn named_key_name(named: NamedKey) -> Option<String> {
     Some(name.to_string())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     // Tabs
     NewTab,

@@ -107,7 +107,11 @@ impl TermWindow {
             page.hover = hover;
             self.window.request_redraw();
         }
-        self.set_cursor_icon(if hover.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
+        self.set_cursor_icon(match hover {
+            Some(settings::Target::Filter) => CursorIcon::Text,
+            Some(_) => CursorIcon::Pointer,
+            None => CursorIcon::Default,
+        });
         true
     }
 
@@ -141,7 +145,9 @@ impl App {
                 self.insert_tab(index, pane);
                 let Some(w) = &mut self.window else { return };
                 if let Some(tab) = w.tabs.get_mut(index) {
-                    tab.settings = Some(SettingsPage::new());
+                    let mut page = SettingsPage::new();
+                    page.bindings = self.bindings.clone();
+                    tab.settings = Some(page);
                 }
                 w.window.request_redraw();
             }
@@ -174,7 +180,7 @@ impl App {
         let (m, scale, extend) = (w.renderer.cell_metrics(), w.scale_factor as f32, w.modifiers.shift_key());
         let Some(page) = w.tabs[w.active_tab].settings.as_mut() else { return false };
         let request = page.click(target, config);
-        if matches!(target, Some(settings::Target::Text(_))) {
+        if matches!(target, Some(settings::Target::Text(_) | settings::Target::Filter)) {
             page.place_caret(&layout, x, m, scale, extend);
         }
         w.window.request_redraw();
@@ -193,6 +199,9 @@ impl App {
         } else if let Some(picker) = &mut page.picker {
             picker.filter.insert(text);
             picker.selected = 0;
+        } else if page.on_shortcuts() {
+            page.shortcut_filter.insert(text);
+            page.scroll = 0;
         }
         w.window.request_redraw();
         true

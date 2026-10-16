@@ -88,6 +88,19 @@ pub fn catalogue(bindings: &HashMap<KeyCombo, Action>) -> Vec<Command> {
         .collect()
 }
 
+/// Every action name in the catalogue.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    COMMANDS.iter().map(|(name, ..)| *name)
+}
+
+/// An action's (name, title, group) in the catalogue, if it's there.
+pub fn describe(action: Action) -> Option<(&'static str, &'static str, &'static str)> {
+    COMMANDS
+        .iter()
+        .find(|(name, ..)| Action::parse(name) == Some(action))
+        .map(|&(name, title, group, _)| (name, title, group))
+}
+
 /// A key combo as people write it: "Ctrl+Shift+T", "Alt+1", "Ctrl+,".
 pub fn combo_label(combo: &KeyCombo) -> String {
     let mut parts: Vec<String> = Vec::new();

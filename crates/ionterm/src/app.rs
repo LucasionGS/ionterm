@@ -588,6 +588,9 @@ impl App {
         let style = self.render_style();
         let blink = self.blink_interval();
         let Some(w) = &mut self.window else { return };
+        for page in w.tabs.iter_mut().filter_map(|t| t.settings.as_mut()) {
+            page.bindings = self.bindings.clone();
+        }
         if font_changed {
             w.font_size = self.config.font.size;
         }
@@ -2203,7 +2206,8 @@ impl TermWindow {
             return Some(&rename.field);
         }
         if let Some(page) = self.settings_page() {
-            return page.picker.as_ref().map(|p| &p.filter).or(page.typing.as_ref());
+            let shortcuts = page.on_shortcuts().then_some(&page.shortcut_filter);
+            return page.picker.as_ref().map(|p| &p.filter).or(page.typing.as_ref()).or(shortcuts);
         }
         self.search.as_ref().filter(|_| self.search_focused()).map(|s| &s.bar.query)
     }
