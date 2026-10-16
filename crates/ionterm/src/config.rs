@@ -107,7 +107,7 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
-            family: "JetBrainsMono Nerd Font".into(),
+            family: ionterm_render::DEFAULT_FAMILY.into(),
             size: 11.0,
             ligatures: true,
         }

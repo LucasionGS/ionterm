@@ -18,7 +18,7 @@ use ionterm_vt::{Cell, Color, CursorShape, Flags, Image, PLACEHOLDER, Palette, R
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 
 use atlas::{ATLAS_SIZE, Atlas};
-pub use font::{CellMetrics, FontOptions};
+pub use font::{CellMetrics, FontOptions, DEFAULT_FAMILY};
 use font::{AtlasFull, Fonts, GlyphPiece};
 use images::ImageCache;
 

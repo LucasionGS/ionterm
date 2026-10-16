@@ -6,6 +6,9 @@
 //! bitmaps are cached separately by cosmic-text's `CacheKey`. cosmic-text
 //! handles fallback, so a glyph missing from the configured family comes from
 //! another installed font.
+//!
+//! On Windows, where nobody has it installed, the default family is built
+//! into the binary. Linux packages depend on it instead.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +22,19 @@ use crate::boxdraw;
 
 /// Shaped runs kept before the cache is dropped and rebuilt.
 const MAX_CACHED_RUNS: usize = 16_384;
+
+/// The default `font.family`.
+pub const DEFAULT_FAMILY: &str = "JetBrainsMono Nerd Font";
+
+/// The default family's regular, bold, italic and bold italic faces
+/// (Nerd Fonts 3.5.1, SIL Open Font License, see `data/fonts/OFL.txt`).
+#[cfg(windows)]
+const BUNDLED_FACES: [&[u8]; 4] = [
+    include_bytes!("../../../data/fonts/JetBrainsMonoNerdFont-Regular.ttf"),
+    include_bytes!("../../../data/fonts/JetBrainsMonoNerdFont-Bold.ttf"),
+    include_bytes!("../../../data/fonts/JetBrainsMonoNerdFont-Italic.ttf"),
+    include_bytes!("../../../data/fonts/JetBrainsMonoNerdFont-BoldItalic.ttf"),
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontOptions {
@@ -93,7 +109,7 @@ pub struct Fonts {
 
 impl Fonts {
     pub fn new(options: FontOptions) -> Self {
-        let mut system = FontSystem::new();
+        let mut system = font_system();
         let metrics = measure(&mut system, &options);
         Self {
             system,
@@ -296,6 +312,26 @@ impl Fonts {
     }
 }
 
+/// The installed fonts. On Windows, plus the built-in default family when it
+/// isn't installed; an installed copy wins, so a newer version is used as is.
+fn font_system() -> FontSystem {
+    #[allow(unused_mut)]
+    let mut system = FontSystem::new();
+    #[cfg(windows)]
+    {
+        let installed = system
+            .db()
+            .faces()
+            .any(|face| face.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(DEFAULT_FAMILY)));
+        if !installed {
+            for data in BUNDLED_FACES {
+                system.db_mut().load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(data)));
+            }
+        }
+    }
+    system
+}
+
 fn attrs(options: &FontOptions) -> Attrs<'_> {
     // swash hints harder than FreeType's "slight" mode that kitty and most
     // Linux apps use through fontconfig, which bulks up strokes. Unhinted
@@ -334,7 +370,7 @@ fn measure(system: &mut FontSystem, options: &FontOptions) -> CellMetrics {
             cosmic_text::fontdb::Source::File(path) | cosmic_text::fontdb::Source::SharedFile(path, _) => {
                 path.display().to_string()
             }
-            _ => "memory".to_string(),
+            _ => "built in".to_string(),
         };
         let matched = options.family.is_empty()
             || face.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(&options.family));
@@ -383,5 +419,34 @@ fn measure(system: &mut FontSystem, options: &FontOptions) -> CellMetrics {
         underline_offset,
         underline_thickness,
         strikeout_offset,
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use cosmic_text::fontdb::{Database, Query, Source};
+
+    #[test]
+    fn bundled_faces_cover_the_default_family() {
+        let mut db = Database::new();
+        for data in BUNDLED_FACES {
+            db.load_font_source(Source::Binary(Arc::new(data)));
+        }
+        for (weight, style) in [
+            (Weight::NORMAL, Style::Normal),
+            (Weight::BOLD, Style::Normal),
+            (Weight::NORMAL, Style::Italic),
+            (Weight::BOLD, Style::Italic),
+        ] {
+            let query = Query {
+                families: &[Family::Name(DEFAULT_FAMILY)],
+                weight,
+                style,
+                ..Query::default()
+            };
+            let face = db.face(db.query(&query).expect("bundled family not found")).unwrap();
+            assert_eq!((face.weight, face.style), (weight, style), "{}", face.post_script_name);
+        }
     }
 }

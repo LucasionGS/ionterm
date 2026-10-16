@@ -5,10 +5,9 @@ pkgdesc='GPU-rendered terminal emulator for the Ionix desktop, with kitty-style 
 arch=('x86_64' 'aarch64')
 url='https://github.com/LucasionGS/ionterm'
 license=('MIT')
-depends=('wayland' 'libxkbcommon' 'vulkan-icd-loader' 'vulkan-driver' 'fontconfig')
+depends=('wayland' 'libxkbcommon' 'vulkan-icd-loader' 'vulkan-driver' 'fontconfig' 'ttf-jetbrains-mono-nerd')
 makedepends=('cargo' 'git')
 optdepends=(
-  'ttf-jetbrains-mono-nerd: the default font'
   'noto-fonts-emoji: colour emoji'
 )
 provides=('ionterm')
