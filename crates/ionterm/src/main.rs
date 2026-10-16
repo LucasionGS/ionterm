@@ -41,11 +41,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn print_help() {
     println!("ionterm {VERSION}: a GPU-rendered terminal emulator\n");
     println!("Usage: ionterm [options] [-e <command> [args...]]");
-    println!("       ionterm host <host>      Open a window connected to an ssh config host");
-    println!("       ionterm ssh <args...>    Open a window connected with ssh arguments (\"ionterm ssh -p 2222 user@host\")");
+    println!("       ionterm host <host>      Open a tab connected to an ssh config host");
+    println!("       ionterm ssh <args...>    Open a tab connected with ssh arguments (\"ionterm ssh -p 2222 user@host\")");
     println!("       ionterm @ <command>      Control a running ionterm (\"ionterm @ help\" lists commands)\n");
     println!("Options:");
     println!("  -e, --exec <command>   Run <command> instead of the shell (takes the rest of the line)");
+    println!("  -w, --new-window       With host or ssh: open a new window instead of a tab in the running ionterm");
     println!("  -h, --help             Show this help");
     println!("  -v, --version          Show the version");
     println!("\nConfig: {}", config::config_dir().map_or("(none)".into(), |d| d.join(config::CONFIG_FILE).display().to_string()));
@@ -64,6 +65,9 @@ fn main() -> ExitCode {
     }
 
     let mut config = Config::load();
+    let mut new_window = false;
+    // `host` and `ssh` go to a running ionterm as a new tab, unless asked not to.
+    let mut forward = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -80,18 +84,23 @@ fn main() -> ExitCode {
                     eprintln!("Missing host. Usage: ionterm host <host>");
                     return ExitCode::from(2);
                 };
+                forward = Some(vec!["host".to_string(), host.clone()]);
                 config.terminal.startup_host = Some(host);
             }
             "ssh" => {
                 let given: Vec<String> = args.by_ref().collect();
                 match ssh::detect::parse_args(&given) {
-                    Ok(parsed) => config.terminal.startup_ssh = Some(parsed),
+                    Ok(parsed) => {
+                        config.terminal.startup_ssh = Some(parsed);
+                        forward = Some(std::iter::once("ssh".to_string()).chain(given).collect());
+                    }
                     Err(message) => {
                         eprintln!("{message} Usage: ionterm ssh [ssh options] <destination> [command]");
                         return ExitCode::from(2);
                     }
                 }
             }
+            "-w" | "--new-window" => new_window = true,
             "-e" | "--exec" => {
                 config.terminal.command = args.by_ref().collect();
                 if config.terminal.command.is_empty() {
@@ -103,6 +112,20 @@ fn main() -> ExitCode {
                 eprintln!("Unknown option: {other}. Run \"ionterm --help\" for usage.");
                 return ExitCode::from(2);
             }
+        }
+    }
+
+    if let Some(command) = forward.filter(|_| !new_window) {
+        match remote::send(&command) {
+            Some(Ok((0, _))) => return ExitCode::SUCCESS,
+            // An older ionterm without these commands: open a window instead.
+            Some(Ok((_, text))) if text.starts_with("Unknown command") => {}
+            Some(Ok((code, text))) => {
+                eprintln!("{}", text.trim_end());
+                return ExitCode::from(code);
+            }
+            // No ionterm running, or it went away: open a window instead.
+            Some(Err(_)) | None => {}
         }
     }
 

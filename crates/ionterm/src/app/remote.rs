@@ -7,6 +7,7 @@ use super::App;
 use crate::input::Action;
 use crate::layout::{Direction, PaneId};
 use crate::remote::{self, BAD_ARGUMENTS, Parsed, Request};
+use crate::ssh;
 
 /// The answer to a command: exit code and output.
 type Answer = (u8, String);
@@ -31,6 +32,10 @@ impl App {
 
     fn remote_command(&mut self, caller: Option<PaneId>, args: &[String]) -> Answer {
         let Some((command, args)) = args.split_first() else { return bad(remote::USAGE) };
+        // ssh's own options aren't ours to parse.
+        if matches!(command.as_str(), "host" | "ssh") {
+            return self.remote_connect(command, args);
+        }
         let (flags, valued): (&[&str], &[&str]) = match command.as_str() {
             "ls" | "list" => (&[], &[]),
             "send-text" | "get-text" | "focus" | "close" | "set-title" | "action" => (&["-a", "--all"], &["-p", "--pane"]),
@@ -179,6 +184,29 @@ impl App {
         let tab = &mut w.tabs[end];
         tab.custom_title = title.filter(|t| !t.is_empty());
         (0, format!("{}\n", tab.active))
+    }
+
+    /// Opens a tab connected to a config host (`host`) or with ssh
+    /// arguments (`ssh`), and brings the window forward.
+    fn remote_connect(&mut self, command: &str, args: &[String]) -> Answer {
+        let connection = if command == "host" {
+            let [alias] = args else { return bad("Usage: ionterm @ host <host>") };
+            self.connection_for(alias)
+        } else {
+            match ssh::detect::parse_args(args) {
+                Ok(parsed) => self.connection_from_args(&parsed),
+                Err(message) => return bad(format!("{message} Usage: ionterm @ ssh [ssh options] <destination> [command]")),
+            }
+        };
+        let Some(w) = &self.window else { return failed("The window is closing.") };
+        let end = w.tabs.len();
+        self.open_tab(end, Some(connection), None);
+        let Some(w) = &self.window else { return failed("The window is closing.") };
+        if w.tabs.len() == end {
+            return failed("Couldn't open the tab (see ionterm's log).");
+        }
+        w.window.focus_window();
+        (0, format!("{}\n", w.tabs[end].active))
     }
 
     fn remote_split(&mut self, id: PaneId, direction: Option<Direction>, command: Vec<String>, cwd: Option<PathBuf>) -> Answer {

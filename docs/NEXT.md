@@ -25,7 +25,7 @@ Done so far, in commit order (`git log --oneline`):
    - Layouts: splits, tall, fat, grid, stack.
 4. **Images:** the kitty graphics protocol (including unicode placeholders) and Sixel. Images are anchored to rows, so they scroll and reflow with the text.
 5. **SSH phases 1 and 2:**
-   - The `ctrl+shift+s` picker over `~/.ssh/config`, the `⌄` button beside `+`, `ionterm host <host>`, and `ionterm ssh <ssh args>` for any connection (`ssh::detect::parse_args`, `Connection::from_args`).
+   - The `ctrl+shift+s` picker over `~/.ssh/config`, the `⌄` button beside `+`, `ionterm host <host>`, and `ionterm ssh <ssh args>` for any connection (`ssh::detect::parse_args`, `Connection::from_args`). Both open a tab in the running ionterm through remote control (`remote::send`, `ionterm @ host|ssh`), or a window with `--new-window` or when none runs.
    - A remote bootstrap that sets up terminfo and an OSC 7 directory hook.
    - A reconnect banner, per-host colour/icon/group, and recognition of `ssh` typed in a shell.
    - A connection editor that saves to `~/.ssh/config.d/ionterm`.
@@ -152,7 +152,7 @@ scripts/drive.sh close
   export HOME=$SCRATCH/fakehome PATH=$SCRATCH/fakebin:$PATH SHELL=/usr/bin/fish; cd "$HOME"
   if [ -n "$cmd" ]; then exec sh -c "$cmd"; else exec bash -l; fi
   ```
-  Launch with `hl.dsp.exec_cmd("env PATH=$SCRATCH/bin:/usr/bin …/ionterm host fakehost")`. Don't connect to the user's real servers without asking (except `ionserver`): the bootstrap writes `~/.terminfo` there. rsync works through the fake ssh too (it runs `rsync --server` locally).
+  Launch with `hl.dsp.exec_cmd("env PATH=$SCRATCH/bin:/usr/bin …/ionterm --new-window host fakehost")` (without `--new-window` it becomes a tab in the user's running ionterm). To test the tab path, start a test window in headless gamescope and run the client with `IONTERM_SOCKET=/run/user/1000/ionterm-<its pid>.sock` and `WAYLAND_DISPLAY=/nonexistent`, so a fallback window can't open on the user's desktop. Don't connect to the user's real servers without asking (except `ionserver`): the bootstrap writes `~/.terminfo` there. rsync works through the fake ssh too (it runs `rsync --server` locally).
 - **lrzsz for ZMODEM tests:** download Arch's `lrzsz` package from a mirror into its own scratch folder, verify it (`gpg --homedir /etc/pacman.d/gnupg --verify <pkg>.sig <pkg>`), and extract it there; don't install it. Link `lrzsz-sz`/`lrzsz-rz` as `sz`/`rz` in the fake host's `fakebin`. The session tests run against it with `IONTERM_LRZSZ=<dir>/usr/bin cargo test -p ionterm lrzsz -- --ignored`.
 - **Transfers against a real host:** `IONTERM_TEST_HOST=ionserver cargo test -p ionterm round_trips_over_ssh -- --ignored` (rsync, the cat/tar fallback, and rsync cancels on both sides; it cleans up its `/tmp` folder).
 - **Debugging and timing:**

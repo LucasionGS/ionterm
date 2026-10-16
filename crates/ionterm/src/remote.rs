@@ -22,6 +22,9 @@ Commands:
   get-text [-p PANE] [-a]         Print a pane's screen, or with -a its whole scrollback
   new-tab [--cwd DIR] [--title T] [command...]
                                   Open a tab, running a command or the shell; prints its pane
+  host <host>                     Open a tab connected to an ssh config host; prints its pane
+  ssh [ssh options] <destination> [command]
+                                  Open a tab connected with ssh arguments; prints its pane
   split [-p PANE] [--right|--down] [--cwd DIR] [command...]
                                   Split a pane; prints the new pane
   focus -p PANE                   Show a pane and give it the keyboard
@@ -161,15 +164,41 @@ pub fn client(args: Vec<String>) -> ExitCode {
         println!("{USAGE}");
         return if args.is_empty() { ExitCode::from(BAD_ARGUMENTS) } else { ExitCode::SUCCESS };
     }
+    let (code, text) = match send(&args) {
+        Some(Ok(answer)) => answer,
+        Some(Err(error)) => {
+            eprintln!("Lost the connection to ionterm: {error}");
+            return ExitCode::FAILURE;
+        }
+        None if cfg!(unix) => {
+            eprintln!("No ionterm to talk to. Run this inside ionterm, or set IONTERM_SOCKET to its socket.");
+            return ExitCode::from(NOT_RUNNING);
+        }
+        None => {
+            eprintln!("Remote control isn't available on Windows yet.");
+            return ExitCode::from(NOT_RUNNING);
+        }
+    };
+    if code == 0 {
+        print!("{text}");
+    } else {
+        eprint!("{text}");
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        if code == 0 { println!() } else { eprintln!() }
+    }
+    ExitCode::from(code)
+}
+
+/// Sends a command to a running ionterm and returns its exit code and
+/// output. `None` when no ionterm answers.
+pub fn send(args: &[String]) -> Option<std::io::Result<(u8, String)>> {
     #[cfg(unix)]
     {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
 
-        let Some(mut stream) = connect() else {
-            eprintln!("No ionterm to talk to. Run this inside ionterm, or set IONTERM_SOCKET to its socket.");
-            return ExitCode::from(NOT_RUNNING);
-        };
+        let mut stream = connect()?;
         let pane = std::env::var("IONTERM_PANE").unwrap_or_default();
         let mut request = Vec::new();
         for field in std::iter::once(pane.as_str()).chain(args.iter().map(String::as_str)) {
@@ -181,21 +210,10 @@ pub fn client(args: Vec<String>) -> ExitCode {
             .write_all(&request)
             .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
             .and_then(|()| stream.read_to_string(&mut answer));
-        if let Err(error) = sent {
-            eprintln!("Lost the connection to ionterm: {error}");
-            return ExitCode::FAILURE;
-        }
-        let (code, text) = answer.split_once('\n').unwrap_or((answer.as_str(), ""));
-        let code: u8 = code.trim().parse().unwrap_or(1);
-        if code == 0 {
-            print!("{text}");
-        } else {
-            eprint!("{text}");
-        }
-        if !text.is_empty() && !text.ends_with('\n') {
-            if code == 0 { println!() } else { eprintln!() }
-        }
-        return ExitCode::from(code);
+        return Some(sent.map(|_| {
+            let (code, text) = answer.split_once('\n').unwrap_or((answer.as_str(), ""));
+            (code.trim().parse().unwrap_or(1), text.to_string())
+        }));
 
         /// `IONTERM_SOCKET`, or the newest ionterm socket that answers.
         fn connect() -> Option<UnixStream> {
@@ -217,8 +235,8 @@ pub fn client(args: Vec<String>) -> ExitCode {
     }
     #[cfg(not(unix))]
     {
-        eprintln!("Remote control isn't available on Windows yet.");
-        ExitCode::from(NOT_RUNNING)
+        let _ = args;
+        None
     }
 }
 
