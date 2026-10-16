@@ -188,4 +188,5 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
   - Windows polish (own titlebar, installer).
   - `ionterm @` over a Windows named pipe (Unix socket done: `remote.rs`, `app/remote.rs`).
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
+- **v0.5 (chosen by the user, see PLAN.md):** tabs between windows, edit remote files locally, port forwards from the tab, command blocks you can act on. The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
 - **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there, and so do command info on hover, clear scrollback and `ionterm @ ls` (remote directory). Reconnect after a dropped connection is still only tested against the fake-ssh setup.

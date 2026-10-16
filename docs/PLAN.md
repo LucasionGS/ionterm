@@ -214,3 +214,47 @@ Phase 3: files
 - Styler section upstreamed into the Ionix repo; ionterm replaces kitty in the ISO, Hyprland keybinds, ioexplorer/hypr-settings launcher lists, ionix-hyprtab
 - Windows polish: own titlebar, DirectWrite font fallback check, installer/zip release
 - [x] `ionterm @` remote control over a Unix socket (`ls`, `send-text`, `get-text`, `new-tab`, `split`, `focus`, `close`, `set-title`, `action`); `IONTERM_SOCKET` / `IONTERM_PANE` in every pane, stale sockets cleaned up. Windows named pipe still to do
+
+### v0.5: workflow
+
+Picked from a brainstorm of what would make ionterm the ideal terminal for dev work and server management. Each item lists the open design questions to ask before starting it.
+
+**Tabs between windows**
+
+Today every window is its own process with its own socket (`ionterm-<pid>.sock`), so a tab can't simply change windows.
+- [ ] One process for every window (kitty's single instance): `ionterm` hands off to the running instance over the socket and opens a window there, unless `--new-window`/`--standalone` asks for a separate process. Also makes new windows start faster and simplifies session ownership. Alternative considered: passing the PTY fd between processes (`SCM_RIGHTS`), but the shell's parent would still be the old process, so its exit code is lost.
+- [ ] Drag a tab out of the tab bar to make it a window of its own; drop it on another window's tab bar to move it there (with the drag-to-reorder animation on the target)
+- [ ] Without the mouse: "Move tab to new window" and "Move tab to window…" (a picker listing windows by their active tab) in the tab menu and the palette; `ionterm @ move-tab --to <window>|--new-window`
+- [ ] Panes keep their scrollback, images, SSH connection, file panel and transfers when they move
+- Open questions: should a single pane be able to move into another window as a split, or only whole tabs? Should session restore save several windows?
+
+**Edit remote files locally**
+
+- [ ] `ionterm-edit <file>…` on the server (another bootstrap function next to `ionterm-get`/`ionterm-put`, sent as OSC 5379 `edit`): download the file over the shared connection to a private temp folder, open it in the local editor (`[hints] open_file` / `$EDITOR` in a new tab or split), and upload it again every time it's saved (watched with `notify`)
+- [ ] "Edit" in the file panel (Enter or double-click on a text file, the right-click menu)
+- [ ] Root-owned files: write back through `sudo` (`sudo tee` over the connection, password asked in a dialog when needed, never stored)
+- [ ] Safety: before uploading, check the remote file's mtime and size still match the copy that was downloaded, and ask (Overwrite / Show diff / Cancel) when someone else changed it. Keep the owner and mode. A toast or the transfer card says "Saved to host:/path"
+- [ ] The temp copy is removed when the editor closes, the tab closes or ionterm exits
+- Only for connections ionterm opened, like the other OSC 5379 commands
+- Open questions: editor inside ionterm (new tab or split) or an external editor (VS Code)? Wait for the editor (blocking, so `ionterm-edit` works as `$EDITOR` for `git commit`/`crontab -e` on the server) or return at once?
+
+**Port forwards from the tab**
+
+- [ ] "Forward port…" in the palette and the tab menu of SSH tabs: remote port (or `host:port` behind the server) → local port, added with `ssh -O forward -L` on the shared ControlMaster, so there's no new login. Removed with `ssh -O cancel`. Reverse forwards (`-R`) too
+- [ ] A chip in the tab bar for each live forward (`:3000 → :3000`); click opens `http://localhost:<port>`, right-click closes it
+- [ ] Remote ports to pick from: listening ports on the server (`ss -ltnH`, falling back to `/proc/net/tcp`), with the process name when readable
+- [ ] Saved per host in `hosts.toml` (`forwards = ["3000", "8080:localhost:80"]`), set up again on connect and after a reconnect; editable in the connection editor
+- [ ] Local panes: ports the pane's process tree listens on (from `/proc/<pid>/net/tcp` and its fds) as a chip with an open button, so `npm run dev` shows `:5173`
+- [ ] A local port that's already taken picks the next free one and says so
+- Windows' OpenSSH has no ControlMaster, so there a forward runs its own `ssh -N -L` process
+- `ionterm @ forward`/`unforward` for scripts
+
+**Command blocks you can act on**
+
+Builds on the OSC 133 marks. Rule for all of it: **regular terminal use doesn't change.** Clicking, dragging, double/triple-click selection, mouse reporting and scrolling work exactly as they do now; nothing covers the text and nothing opens by itself.
+- [ ] Sticky command header: while scrolled into a command's output, its command line stays pinned at the top of the pane (one row, theme colours, with the ✓/✗, duration and time like the hover info). Clicking it jumps to the prompt. **A toggle in the settings page** (`[terminal] sticky_command`), off in the alternate screen and while the shell is at its prompt
+- [ ] Scrollbar with markers: a thin overlay scrollbar shown while scrolling or hovering the right edge, with marks for prompts, failed commands and search hits; click or drag to jump. Also a setting
+- [ ] Block actions, never in the way: a small `⋯` appears in the right padding beside a prompt only while the mouse is over that command's block (not during a drag, a selection or in mouse-reporting apps). It opens a menu: copy command, copy output, copy both as a Markdown code block, rerun, open the output in `$EDITOR` / the pager / a viewer like `jless`, save the output to a file
+- [ ] The same actions without the mouse: palette entries and optional keybindings that work on the block at the cursor, or the last block (alongside the existing ctrl+shift+g / ctrl+shift+right-click)
+- [ ] Folding: collapse a long output to its first and last few lines with a "… 4,812 lines" row; a fold marker in the left padding (next to the failed mark) and a palette/keybinding action. Copying, searching and the pager still see everything
+- Open questions: should folds survive reflow and clear scrollback? Where should rerun go when the shell is busy (new split or refuse)?
