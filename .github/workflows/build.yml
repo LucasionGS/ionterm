@@ -32,3 +32,79 @@ jobs:
           path: target/release/${{ matrix.binary }}
           # Every push uploads a build; keep them briefly so they don't fill the account's storage.
           retention-days: 7
+
+  # The PKGBUILD's package, for `pacman -U`. Only for releases, since it compiles everything again.
+  pacman:
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      # Without git in the container, checkout downloads a tarball without history.
+      - name: Install build tools
+        run: pacman -Syu --noconfirm --needed git rust
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build package
+        run: |
+          # makepkg refuses to run as root.
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          BUILD_DIR="$(runuser -u builder -- mktemp -d)"
+          # Copied as builder: makepkg only writes the pkgver() version into a PKGBUILD it can write to,
+          # and otherwise keeps the stale pkgver= in the file.
+          runuser -u builder -- cp PKGBUILD "$BUILD_DIR/"
+          # Build this exact commit from the checkout instead of cloning GitHub.
+          runuser -u builder -- sed -i "s|^source=.*|source=(\"\$pkgname::git+file://$GITHUB_WORKSPACE#commit=$GITHUB_SHA\")|" "$BUILD_DIR/PKGBUILD"
+          # Arch's makepkg.conf also makes a -debug package by default; skip it.
+          echo "options=('!debug')" >> "$BUILD_DIR/PKGBUILD"
+          # The build tools are installed above; the runtime dependencies only matter where it's installed.
+          (cd "$BUILD_DIR" && runuser -u builder -- makepkg --nodeps --noconfirm)
+          mkdir pkg-out
+          cp "$BUILD_DIR"/*.pkg.tar.zst pkg-out/
+          ls pkg-out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ionterm-arch_x64
+          path: pkg-out/*.pkg.tar.zst
+          retention-days: 7
+
+  # Builds of master become a GitHub release, versioned like the PKGBUILD's pkgver().
+  release:
+    needs: [build, pacman]
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The full history, so the commit count matches a local clone.
+          fetch-depth: 0
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: Version
+        id: version
+        run: echo "version=$(printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)")" >> "$GITHUB_OUTPUT"
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          # Artifacts lose the executable bit, so the Linux binary ships in a tarball that keeps it.
+          chmod +x artifacts/ionterm-linux_x64/ionterm
+          tar -czf "dist/ionterm-$VERSION-linux_x64.tar.gz" -C artifacts/ionterm-linux_x64 ionterm
+          cp artifacts/ionterm-windows_x64/ionterm.exe "dist/ionterm-$VERSION-windows_x64.exe"
+          # Already named by makepkg, like ionterm-git-r55.11e41a1-1-x86_64.pkg.tar.zst.
+          cp artifacts/ionterm-arch_x64/*.pkg.tar.zst dist/
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # A re-run of the same commit replaces the assets instead of failing.
+          if ! gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release create "$VERSION" --target "$GITHUB_SHA" --title "ionterm $VERSION" --generate-notes
+          fi
+          gh release upload "$VERSION" dist/* --clobber
