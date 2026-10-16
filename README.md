@@ -29,9 +29,10 @@ A fast, GPU-rendered terminal for the Ionix desktop. It picks up your wallpaper 
 - **Safe pasting**: pasting several lines into something that would run each one immediately (a bare `sh`, a `sudo` prompt, an old bash) asks first, and offers to join them into one line instead. Shells that handle pastes safely are never bothered.
 - **Never miss a finished build**: tabs you're not looking at show a dot for new output, a bell when something rings, and a ✓ or ✗ when a long command finishes. If you're in another window, you get a desktop notification too ("✗ cargo build (exit 101), finished after 2m 03s"). Programs can send their own notifications with OSC 9 / 777.
 - **Progress in the tab**: downloads, builds and updates fill a bar along the bottom of their tab, whether the program reports its progress or just prints `45%`.
+- **One ionterm, many windows**: ctrl+shift+n (or launching ionterm again) opens a window in the ionterm that's already running, which is quicker and lets tabs move around. Drag a tab out of the tab bar to give it its own window, or drop it on another window's tab bar. Right-click a tab for "Move to new window" and "Move to window…", or move a single pane into its own tab, its own window or another tab as a split from the command palette. Shells, scrollback, SSH connections and running transfers all come along. Want a separate process anyway? `ionterm --standalone`.
 - **Splits and layouts**: split any pane and drag the borders between them, type into all of them at once with ctrl+shift+b (handy for a few servers), or let kitty-style layouts (tall, fat, grid, stack) arrange them. New tabs and splits open in the directory you're in.
-- **Pick up where you left off**: turn on `restore` under `[session]` and the next window reopens your tabs, splits, folders and SSH connections, exactly as you had them. Close every tab yourself and you start fresh.
-- **Scriptable**: `ionterm @` drives the terminal from scripts: open tabs and splits running commands, type into panes, read their text, retitle tabs or run any keybinding action. See [Remote control](#remote-control).
+- **Pick up where you left off**: turn on `restore` under `[session]` and next time every window reopens with its tabs, splits, folders and SSH connections, exactly as you had them. Close every tab yourself and you start fresh.
+- **Scriptable**: `ionterm @` drives the terminal from scripts: open windows, tabs and splits running commands, move tabs and panes between windows, type into panes, read their text, retitle tabs or run any keybinding action. See [Remote control](#remote-control).
 - **SSH-friendly**: `TERM` falls back to `xterm-256color` whenever the remote end might not know `xterm-ionterm`, so no more "unknown terminal".
 
 Coming up: more. See [the plan](docs/PLAN.md).
@@ -43,16 +44,19 @@ Config lives in `~/.config/ionterm/` (`%APPDATA%\ionterm\` on Windows):
 - `ionterm.toml`: fonts, window, cursor, scrollback and keybindings. Every key is optional; [extras/ionterm.toml](extras/ionterm.toml) lists them all with their defaults.
 - `theme.toml`: colours. The Ionix styler links this file in for you; without one you get the Ionix palette on a soft dark background.
 
-Run `ionterm -e <command>` to start something other than your shell, for example `ionterm -e btop`.
+Run `ionterm -e <command>` to start something other than your shell, for example `ionterm -e btop`. With ionterm already running, new windows open in it (`single_instance` under `[terminal]`); `--standalone` starts a separate ionterm instead. Only the same program is joined, so a development build never hands its windows to the installed one.
 
 ## Remote control
 
 Anything running inside ionterm can control it with `ionterm @ <command>` (it finds its own window and pane through `IONTERM_SOCKET` and `IONTERM_PANE`):
 
 ```sh
-ionterm @ ls                                  # tabs and panes, tab-separated
+ionterm @ ls                                  # windows, tabs and panes, tab-separated
 ionterm @ split --right -- htop               # prints the new pane's id
 ionterm @ new-tab --title Logs --cwd /var/log journalctl -f
+ionterm @ new-window --host ionserver          # a window connected to a host
+ionterm @ move-tab --new-window               # this tab gets a window of its own
+ionterm @ move-pane --tab 1 --window 2        # this pane joins window 2's first tab
 ionterm @ send-text -p 3 'cargo test\n'        # type into pane 3
 ionterm @ get-text -p 3 -a > build.log        # its whole scrollback
 ionterm @ set-title "deploy"                  # this tab's name

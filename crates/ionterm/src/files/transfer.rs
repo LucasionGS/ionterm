@@ -184,23 +184,38 @@ pub struct External {
 /// Every transfer in the window: queued, running and recently finished.
 pub struct Transfers {
     pub list: Vec<Transfer>,
-    next_id: TransferId,
     proxy: EventLoopProxy<UserEvent>,
+}
+
+/// Transfer ids are unique across windows, so a pane's transfers can move
+/// with it to another window and still get their reports.
+fn next_id() -> TransferId {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Transfers {
     pub fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
-        Self {
-            list: Vec::new(),
-            next_id: 1,
-            proxy,
-        }
+        Self { list: Vec::new(), proxy }
+    }
+
+    /// Takes out a pane's transfers, which move with it to another window.
+    pub fn take_for_pane(&mut self, pane: PaneId) -> Vec<Transfer> {
+        let (taken, kept) = std::mem::take(&mut self.list).into_iter().partition(|t| t.pane == pane);
+        self.list = kept;
+        self.pump();
+        taken
+    }
+
+    /// Takes in transfers from another window, starting queued ones.
+    pub fn adopt(&mut self, transfers: Vec<Transfer>) {
+        self.list.extend(transfers);
+        self.pump();
     }
 
     /// Queues a transfer, starting it when a slot is free.
     pub fn add(&mut self, pane: PaneId, spec: TransferSpec) -> TransferId {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = next_id();
         self.list.push(Transfer {
             id,
             pane,
@@ -226,8 +241,7 @@ impl Transfers {
     /// Lists a transfer that something else carries out (a ZMODEM session in
     /// a pane), reported through `event`. `abort` stops it.
     pub fn add_external(&mut self, pane: PaneId, external: External, abort: impl Fn() + Send + Sync + 'static) -> TransferId {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = next_id();
         self.list.push(Transfer {
             id,
             pane,

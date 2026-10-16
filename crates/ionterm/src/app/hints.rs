@@ -22,7 +22,7 @@ use crate::theme::Theme;
 
 /// What can be picked, while hints are shown.
 pub struct HintsMode {
-    pane: PaneId,
+    pub(super) pane: PaneId,
     targets: Vec<Target>,
     /// Label letters typed so far.
     typed: String,

@@ -1,5 +1,5 @@
-//! The winit application: owns the window and its tabs of panes, and routes
-//! events between the window system, the panes and the renderer.
+//! The winit application: owns the windows and their tabs of panes, and
+//! routes events between the window system, the panes and the renderer.
 
 mod background;
 mod drag;
@@ -12,6 +12,9 @@ mod search;
 mod session;
 mod settings;
 mod trail;
+mod windows;
+
+pub use windows::{Content, NewWindow};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,19 +22,16 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use ionterm_render::{Chrome, ChromeItem, FontOptions, PaneView, RenderStyle, Renderer};
 use ionterm_vt::{CursorShape, TermEvent, TermMode};
 use winit::application::ApplicationHandler;
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use crate::config::{
-    CONFIG_FILE, Config, CursorShapeConfig, Decorations, FontConfig, ShowTabBar, THEME_FILE, TabBarEdge, config_dir,
-};
+use crate::config::{CONFIG_FILE, Config, CursorShapeConfig, FontConfig, ShowTabBar, THEME_FILE, TabBarEdge, config_dir};
 use crate::dialog::{self, Answer, Dialog};
 use crate::dnd::{self, DragEvent};
 use crate::zmodem;
@@ -43,7 +43,7 @@ use crate::links;
 use crate::scrollback;
 use crate::editor::{self, Editor, Outcome};
 use crate::menu::{self, Menu, MenuCommand};
-use crate::palette::{self, Palette, PaletteAction, PaletteItem};
+use crate::palette::{self, Palette, PaletteAction, PaletteItem, PaneTarget};
 use crate::ssh::{self, Connection, HostExtras};
 use crate::pane::{Pane, SelectionKind, SelectionState};
 use crate::tab::Tab;
@@ -69,6 +69,9 @@ const TAB_DRAG_THRESHOLD: f64 = 6.0;
 /// How quickly tabs glide to their slots (per second); higher is snappier.
 /// At 18 a tab covers 95% of the distance in about 170 ms.
 const TAB_GLIDE_RATE: f32 = 18.0;
+/// How far, in logical pixels, a tab must be dragged away from the tab bar
+/// (or past the window's sides) to leave its window when let go.
+const TAB_DETACH_DISTANCE: f64 = 48.0;
 
 #[derive(Debug)]
 pub enum UserEvent {
@@ -80,9 +83,10 @@ pub enum UserEvent {
     Files(FilesEvent),
     /// An upload or download moved along or finished.
     Transfer(TransferId, TransferEvent),
-    /// Files dragged over the window, where winit doesn't report them.
+    /// Files dragged over a window (named by `dnd::surface_key`), where
+    /// winit doesn't report them.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Drag(DragEvent),
+    Drag(Option<usize>, DragEvent),
     /// A ZMODEM transfer in a pane moved along.
     Zmodem(PaneId, zmodem::Event),
     /// A remote control command (`ionterm @ …`).
@@ -94,16 +98,36 @@ pub struct App {
     config: Config,
     theme: Theme,
     bindings: HashMap<KeyCombo, Action>,
+    /// The window being worked on. Each event makes its own window this one
+    /// first (`select_window`), so everything else deals with one window.
     window: Option<TermWindow>,
+    /// The other windows.
+    parked: Vec<TermWindow>,
+    /// Windows to open once the event loop can (`about_to_wait`).
+    pending_windows: Vec<NewWindow>,
+    next_window_serial: u64,
+    /// The window that last had the keyboard: remote commands from outside
+    /// ionterm go there.
+    last_focused: Option<WindowId>,
+    /// A tab let go outside its window, waiting to see where it lands.
+    tab_drop: Option<windows::TabDrop>,
+    /// Listens for file drops on Wayland, for every window; stopped before
+    /// the display closes.
+    drops: Option<dnd::Listener>,
     clipboard: Option<arboard::Clipboard>,
     reload_at: Option<Instant>,
     next_pane_id: PaneId,
-    /// Set when the last tab closes; the event loop exits on its next pass.
+    /// Set when the last window closes; the event loop exits on its next pass.
     exit_requested: bool,
+    /// The first window is opened and remote control started.
+    started: bool,
     /// When the session is next compared with the saved one, and what was
     /// last saved.
     session_due: Instant,
     session_saved: Option<crate::session::Session>,
+    /// Whether this ionterm took the saved session over (restored it, or
+    /// found none); only then does it save one.
+    session_taken: bool,
     /// This machine's name, to tell remote directory reports from local ones.
     local_host: String,
     _watcher: Option<notify::RecommendedWatcher>,
@@ -111,6 +135,13 @@ pub struct App {
 }
 
 struct TermWindow {
+    id: WindowId,
+    /// The order windows were opened in, for the session and window lists.
+    serial: u64,
+    /// Part of the saved session (not windows opened for one program or host).
+    in_session: bool,
+    /// The window's Wayland surface, to tell which window a file drop is over.
+    surface: Option<usize>,
     window: Arc<Window>,
     renderer: Renderer,
     tabs: Vec<Tab>,
@@ -152,8 +183,6 @@ struct TermWindow {
     toast: Option<(String, Instant)>,
     /// The transfer card button under the mouse.
     card_hover: Option<crate::files::panel::Target>,
-    /// Listens for file drops on Wayland; stopped before the display closes.
-    drops: Option<dnd::Listener>,
     /// Where files are being dragged over the window, while they are.
     file_drag: Option<PhysicalPosition<f64>>,
     /// Files winit dropped one by one (X11, Windows), handed over together.
@@ -176,6 +205,8 @@ struct TabDrag {
     /// Pointer x minus the tab's left edge when the drag began.
     grab_dx: f64,
     moved: bool,
+    /// Dragged far enough from the tab bar to leave the window when let go.
+    outside: bool,
 }
 
 /// A tab title being edited in place.
@@ -198,6 +229,8 @@ enum BarAction {
     /// The dialog was answered.
     Dialog(Answer),
     Settings,
+    /// A tab was let go away from the tab bar: it leaves the window.
+    DetachTab(usize),
 }
 
 /// Work that needs `&mut App` after a window borrow ends.
@@ -210,7 +243,7 @@ enum FollowUp {
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<UserEvent>, config: Config) -> Self {
+    pub fn new(proxy: EventLoopProxy<UserEvent>, config: Config, first: NewWindow) -> Self {
         let watcher = watch_config(proxy.clone());
         Self {
             proxy,
@@ -218,12 +251,20 @@ impl App {
             theme: Theme::load(),
             config,
             window: None,
+            parked: Vec::new(),
+            pending_windows: vec![first],
+            next_window_serial: 0,
+            last_focused: None,
+            tab_drop: None,
+            drops: None,
             clipboard: None,
             reload_at: None,
             next_pane_id: 1,
             exit_requested: false,
+            started: false,
             session_due: Instant::now(),
             session_saved: None,
+            session_taken: false,
             local_host: ssh::local_hostname(),
             _watcher: watcher,
             error: None,
@@ -250,108 +291,6 @@ impl App {
         (secs > 0.0).then(|| Duration::from_secs_f32(secs))
     }
 
-    fn create_window(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<TermWindow> {
-        let attributes = Window::default_attributes()
-            .with_title("ionterm")
-            .with_transparent(true)
-            .with_decorations(match self.config.window.decorations {
-                Decorations::Full => true,
-                Decorations::None => false,
-                // Tiling compositors draw their own borders.
-                Decorations::Auto => std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none(),
-            });
-        // The app id Hyprland window rules match on.
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let attributes = {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            attributes.with_name("ionterm", "ionterm")
-        };
-        let window = Arc::new(event_loop.create_window(attributes.with_window_icon(window_icon())).context("creating the window")?);
-        window.set_cursor(CursorIcon::Text);
-
-        let scale_factor = window.scale_factor();
-        let font_size = self.config.font.size;
-        let size = window.inner_size();
-        let renderer = Renderer::new(
-            window.clone(),
-            size.width,
-            size.height,
-            font_options(&self.config.font, font_size, scale_factor),
-            self.render_style(),
-        )?;
-
-        // Ask for the configured size in cells; tiling compositors may ignore it.
-        let m = renderer.cell_metrics();
-        let pad = (self.config.window.padding * scale_factor as f32).round();
-        let _ = window.request_inner_size(PhysicalSize::new(
-            (f32::from(self.config.window.columns) * m.width + 2.0 * pad) as u32,
-            (f32::from(self.config.window.lines) * m.height + 2.0 * pad) as u32,
-        ));
-
-        let (tabs, active_tab) = match self.restore_session(m) {
-            Some(restored) => restored,
-            None => {
-                let terminal = &self.config.terminal;
-                let connection = match (&terminal.startup_host, &terminal.startup_ssh) {
-                    (Some(alias), _) => Some(self.connection_for(alias)),
-                    (None, Some(args)) => Some(self.connection_from_args(args)),
-                    (None, None) => None,
-                };
-                let pane = self.spawn_pane(m, connection, None)?;
-                (vec![Tab::new(pane, self.default_layout())], 0)
-            }
-        };
-        let mut w = TermWindow {
-            window,
-            renderer,
-            tabs,
-            active_tab,
-            scale_factor,
-            font_size,
-            modifiers: ModifiersState::empty(),
-            focused: true,
-            blink_on: true,
-            next_blink: self.blink_interval().map(|d| Instant::now() + d),
-            pointer: PhysicalPosition::new(0.0, 0.0),
-            capture: None,
-            pointer_cell: None,
-            cursor_icon: CursorIcon::Text,
-            tab_bar: None,
-            tab_hover: Hit::None,
-            tab_drag: None,
-            rename: None,
-            menu: None,
-            last_tab_click: None,
-            tab_positions: HashMap::new(),
-            palette: None,
-            editor: None,
-            ssh_extras: ssh::load_extras(),
-            last_frame: None,
-            dialog: None,
-            transfers: Transfers::new(self.proxy.clone()),
-            toast: None,
-            card_hover: None,
-            drops: None,
-            file_drag: None,
-            dropped: Vec::new(),
-            zmodem_transfers: HashMap::new(),
-            hints: None,
-            search: None,
-            split_drag: None,
-            trail: trail::Trail::default(),
-        };
-        w.drops = dnd::listen(&w.window, self.proxy.clone());
-        match background::load(&self.config.window) {
-            Ok(picture) => w.renderer.set_background(picture),
-            Err(message) => {
-                tracing::warn!("{message}");
-                w.show_toast(message);
-            }
-        }
-        w.relayout(&self.config, false);
-        Ok(w)
-    }
-
     fn default_layout(&self) -> layout::Layout {
         self.config.layouts.enabled.first().copied().unwrap_or_default()
     }
@@ -366,6 +305,22 @@ impl App {
         self.next_pane_id += 1;
         let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
         Pane::spawn(id, &self.config.terminal, connection, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem)
+    }
+
+    /// A pane running a program (an editor, the pager) instead of the shell;
+    /// it closes when the program ends.
+    fn spawn_command_pane(
+        &mut self,
+        metrics: ionterm_render::CellMetrics,
+        argv: Vec<String>,
+        cwd: Option<PathBuf>,
+    ) -> anyhow::Result<Pane> {
+        let mut terminal = self.config.terminal.clone();
+        terminal.command = argv;
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
+        Pane::spawn(id, &terminal, None, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem)
     }
 
     /// The command to connect to an ssh config host.
@@ -472,6 +427,16 @@ impl App {
                 }
             }
             PaletteAction::Command(action) => self.perform(action),
+            PaletteAction::MoveTab(to) => {
+                if let Some(index) = self.window.as_ref().map(|w| w.active_tab) {
+                    self.move_tab(index, to);
+                }
+            }
+            PaletteAction::MovePane(target) => {
+                if let Some(id) = self.window.as_ref().map(|w| w.active_pane().id) {
+                    self.move_pane(id, target);
+                }
+            }
             PaletteAction::NewConnection => {
                 let editor = Editor::new(&self.theme);
                 if let Some(w) = &mut self.window {
@@ -579,12 +544,13 @@ impl App {
         let background_changed = (&config.window.background_image, config.window.background_image_opacity)
             != (&self.config.window.background_image, self.config.window.background_image_opacity);
         self.bindings = input::build_bindings(&config.keybindings);
-        // `ionterm -e` isn't part of the file; keep it.
-        let command = std::mem::take(&mut self.config.terminal.command);
         self.config = config;
-        self.config.terminal.command = command;
         self.theme = theme;
+        self.for_each_window(|app| app.apply_config(font_changed, background_changed));
+    }
 
+    /// Brings the window being worked on in line with a reloaded config.
+    fn apply_config(&mut self, font_changed: bool, background_changed: bool) {
         let style = self.render_style();
         let blink = self.blink_interval();
         let Some(w) = &mut self.window else { return };
@@ -794,12 +760,7 @@ impl App {
     fn open_command_tab_at(&mut self, index: usize, argv: Vec<String>, cwd: Option<PathBuf>) {
         let Some(w) = &self.window else { return };
         let metrics = w.renderer.cell_metrics();
-        let mut terminal = self.config.terminal.clone();
-        terminal.command = argv;
-        let id = self.next_pane_id;
-        self.next_pane_id += 1;
-        let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
-        match Pane::spawn(id, &terminal, None, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem) {
+        match self.spawn_command_pane(metrics, argv, cwd) {
             Ok(pane) => self.insert_tab(index, pane),
             Err(error) => tracing::warn!("could not open a tab: {error:#}"),
         }
@@ -873,6 +834,11 @@ impl App {
                 w.tabs[tab].color = color;
                 w.window.request_redraw();
             }
+            MenuCommand::MoveToNewWindow => self.move_tab(tab, None),
+            MenuCommand::MoveToWindow => {
+                w.select_tab(tab);
+                self.open_move_tab_picker();
+            }
             MenuCommand::Close => self.close_tab(tab),
             MenuCommand::CloseOthers => {
                 let count = w.tabs.len();
@@ -905,12 +871,7 @@ impl App {
         };
         let Some(w) = &self.window else { return };
         let metrics = w.renderer.cell_metrics();
-        let mut terminal = self.config.terminal.clone();
-        terminal.command = command;
-        let id = self.next_pane_id;
-        self.next_pane_id += 1;
-        let zmodem = zmodem::Shared::new(transfer::download_dir(&self.config.files.download_dir));
-        let pane = Pane::spawn(id, &terminal, None, cwd, self.theme.palette(), metrics, self.proxy.clone(), zmodem);
+        let pane = self.spawn_command_pane(metrics, command, cwd);
         self.add_split(direction, pane);
     }
 
@@ -978,12 +939,13 @@ impl App {
         w.tab_drag = None;
         w.tab_hover = Hit::None;
         if w.tabs.is_empty() {
+            // Closing every tab of the last window yourself ends the session.
+            if self.parked.is_empty() && self.pending_windows.is_empty() {
+                crate::session::remove_ours();
+            }
             // Events still queued (the key's release) must not find a window
             // without tabs.
-            self.window = None;
-            // Closing every tab yourself ends the session.
-            crate::session::remove_ours();
-            self.exit_requested = true;
+            self.close_window();
             return;
         }
         if w.active_tab > index || w.active_tab >= w.tabs.len() {
@@ -1006,6 +968,20 @@ impl App {
             Action::PasteSelection => self.paste(cfg!(target_os = "linux")),
             Action::ReloadConfig => self.reload_config(),
             Action::NewTab => self.new_tab(),
+            Action::NewWindow => self.new_window(),
+            Action::MoveTabToNewWindow => {
+                if let Some(index) = self.window.as_ref().map(|w| w.active_tab) {
+                    self.move_tab(index, None);
+                }
+            }
+            Action::MoveTabToWindow => self.open_move_tab_picker(),
+            Action::MovePaneToNewTab | Action::MovePaneToNewWindow => {
+                let target = if action == Action::MovePaneToNewTab { PaneTarget::NewTab } else { PaneTarget::NewWindow };
+                if let Some(id) = self.window.as_ref().map(|w| w.active_pane().id) {
+                    self.move_pane(id, target);
+                }
+            }
+            Action::MovePane => self.open_move_pane_picker(),
             Action::CloseTab => {
                 if let Some(index) = self.window.as_ref().map(|w| w.active_tab) {
                     self.close_tab(index);
@@ -1336,6 +1312,7 @@ impl App {
                 Some(BarAction::Close(index)) => self.close_tab(index),
                 Some(BarAction::Menu(command, tab)) => self.menu_command(tab, command),
                 Some(BarAction::Dialog(answer)) => self.dialog_answer(answer),
+                Some(BarAction::DetachTab(index)) => self.start_tab_drop(index),
                 None => {}
             }
             return FollowUp::None;
@@ -1465,8 +1442,12 @@ impl App {
         let m = w.renderer.cell_metrics();
         let scale = w.scale_factor as f32;
 
-        if !pressed && button == MouseButton::Left && w.tab_drag.take().is_some() {
-            return Some(None);
+        if !pressed
+            && button == MouseButton::Left
+            && let Some(drag) = w.tab_drag.take()
+        {
+            w.window.request_redraw();
+            return Some((drag.moved && drag.outside).then_some(BarAction::DetachTab(drag.index)));
         }
         // The dialog is modal: it takes every click while open.
         let window_rect = w.window_rect();
@@ -1569,6 +1550,7 @@ impl App {
                         start_x: x,
                         grab_dx: x - f64::from(drawn_x),
                         moved: false,
+                        outside: false,
                     });
                 }
                 None
@@ -1691,11 +1673,33 @@ impl App {
             w.set_cursor_icon(icon);
             return;
         }
-        if let Some(drag) = &mut w.tab_drag {
-            if !drag.moved && (x - drag.start_x).abs() > TAB_DRAG_THRESHOLD * f64::from(scale) {
+        if w.tab_drag.is_some() {
+            // Far enough from the bar (or past the sides), letting go moves
+            // the tab out of the window.
+            let away = TAB_DETACH_DISTANCE * f64::from(scale);
+            let size = w.window.inner_size();
+            let bar = w.tab_bar.unwrap_or_default();
+            let (top, bottom) = (f64::from(bar.y), f64::from(bar.y + bar.height));
+            let outside = x < -away || x > f64::from(size.width) + away || y < top - away || y > bottom + away;
+            let alone = w.tabs.len() == 1;
+            let Some(drag) = &mut w.tab_drag else { return };
+            if !drag.moved && ((x - drag.start_x).abs() > TAB_DRAG_THRESHOLD * f64::from(scale) || outside) {
                 drag.moved = true;
             }
+            let left_now = drag.moved && outside && !drag.outside;
             if drag.moved {
+                drag.outside = outside;
+            }
+            if left_now {
+                w.show_toast(if alone {
+                    "Let go over another ionterm window to move the tab there"
+                } else {
+                    "Let go to move the tab to a new window, or over another ionterm window"
+                });
+            }
+            if let Some(drag) = &w.tab_drag
+                && drag.moved
+            {
                 let (index, grab_dx) = (drag.index, drag.grab_dx);
                 let infos = w.tab_infos(&self.config);
                 if let Some(layout) = w.bar_layout(&self.config, &infos) {
@@ -2483,30 +2487,40 @@ fn watch_config(proxy: EventLoopProxy<UserEvent>) -> Option<notify::RecommendedW
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if std::mem::replace(&mut self.started, true) {
             return;
         }
-        match self.create_window(event_loop) {
-            Ok(window) => {
-                self.window = Some(window);
-                if self.config.terminal.remote_control {
-                    let proxy = self.proxy.clone();
-                    crate::remote::listen(move |request| proxy.send_event(UserEvent::Remote(request)).is_ok());
-                }
-            }
-            Err(error) => {
-                self.error = Some(error);
-                event_loop.exit();
-            }
+        self.open_pending_windows(event_loop);
+        if self.window.is_none() {
+            event_loop.exit();
+            return;
+        }
+        if self.config.terminal.remote_control {
+            let proxy = self.proxy.clone();
+            crate::remote::listen(move |request| proxy.send_event(UserEvent::Remote(request)).is_ok());
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // A tab let go outside its window lands in the window that gets the
+        // pointer next.
+        if let WindowEvent::CursorMoved { position, .. } = &event
+            && self.tab_drop.is_some()
+        {
+            self.land_tab_drop(id, position.x);
+        }
+        if !self.select_window(id) {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
-                // Closing the window keeps the session for next time.
-                self.save_session(Instant::now(), true);
-                event_loop.exit();
+                if self.parked.is_empty() {
+                    // Closing the last window keeps the session for next time.
+                    self.save_session(Instant::now(), true);
+                    event_loop.exit();
+                } else {
+                    self.close_window();
+                }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(w) = &mut self.window {
@@ -2527,6 +2541,9 @@ impl ApplicationHandler<UserEvent> for App {
                 w.relayout(&self.config, true);
             }
             WindowEvent::Focused(focused) => {
+                if focused {
+                    self.last_focused = Some(id);
+                }
                 if let Some(w) = &mut self.window {
                     w.focused = focused;
                     w.blink_on = true;
@@ -2719,37 +2736,98 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        // Each event goes to the window it's about.
         match event {
-            UserEvent::Wakeup(id) => self.handle_wakeup(id),
-            UserEvent::ChildExited(id) => self.child_exited(id),
+            UserEvent::Wakeup(id) => {
+                if self.select_window_of_pane(id) {
+                    self.handle_wakeup(id);
+                }
+            }
+            UserEvent::ChildExited(id) => {
+                if self.select_window_of_pane(id) {
+                    self.child_exited(id);
+                }
+            }
             UserEvent::ConfigChanged => self.reload_at = Some(Instant::now() + RELOAD_DEBOUNCE),
-            UserEvent::Files(event) => self.files_event(event),
-            UserEvent::Transfer(id, event) => self.transfer_event(id, event),
-            UserEvent::Drag(event) => self.drag_event(event),
-            UserEvent::Zmodem(pane, event) => self.zmodem_event(pane, event),
+            UserEvent::Files(event) => {
+                if self.select_window_of_pane(event.pane()) {
+                    self.files_event(event);
+                }
+            }
+            UserEvent::Transfer(id, event) => {
+                let window = self.windows().find(|w| w.transfers.list.iter().any(|t| t.id == id)).map(|w| w.id);
+                if window.is_some_and(|window| self.select_window(window)) {
+                    self.transfer_event(id, event);
+                }
+            }
+            UserEvent::Drag(surface, event) => {
+                let window = self.windows().find(|w| surface.is_some() && w.surface == surface).map(|w| w.id);
+                if window.is_some_and(|window| self.select_window(window)) {
+                    self.drag_event(event);
+                }
+            }
+            UserEvent::Zmodem(pane, event) => {
+                if self.select_window_of_pane(pane) {
+                    self.zmodem_event(pane, event);
+                }
+            }
             UserEvent::Remote(request) => self.remote_request(request),
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.started {
+            self.open_pending_windows(event_loop);
+        }
         if self.exit_requested {
             event_loop.exit();
             return;
         }
-        self.flush_dropped();
         let now = Instant::now();
+        self.finish_tab_drop(now);
         if self.reload_at.is_some_and(|at| at <= now) {
             self.reload_at = None;
             self.reload_config();
         }
+        let session_wake = self.save_session(now, false);
+        let mut wake = [self.reload_at, session_wake, self.tab_drop_deadline()].into_iter().flatten().min();
+        self.for_each_window(|app| {
+            let next = app.window_timers(now);
+            wake = [wake, next].into_iter().flatten().min();
+        });
+        // Something above may have opened or closed a window.
+        if !self.pending_windows.is_empty() {
+            wake = Some(now);
+        }
+        if self.exit_requested {
+            event_loop.exit();
+            return;
+        }
+        event_loop.set_control_flow(match wake {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        });
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The drop listener shares winit's Wayland connection: stop its
+        // thread now, while the connection is still open.
+        self.drops = None;
+        scrollback::remove_files();
+        crate::remote::remove_socket();
+    }
+}
+
+impl App {
+    /// The window being worked on's timed work: dropped files, finished
+    /// transfers and progress, search, synchronized output, selection
+    /// auto-scroll and the cursor blink. Returns when to come back.
+    fn window_timers(&mut self, now: Instant) -> Option<Instant> {
+        self.flush_dropped();
         let blink = self.blink_interval();
         let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
         let search_wake = self.window.as_mut().and_then(|w| w.refresh_search(now));
-        let session_wake = self.save_session(now, false);
-        let mut wake = [self.reload_at, self.expire_files(now), progress_wake, search_wake, session_wake]
-            .into_iter()
-            .flatten()
-            .min();
+        let mut wake = [self.expire_files(now), progress_wake, search_wake].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);
@@ -2783,19 +2861,6 @@ impl ApplicationHandler<UserEvent> for App {
                 w.window.request_redraw();
             }
         }
-        event_loop.set_control_flow(match wake {
-            Some(at) => ControlFlow::WaitUntil(at),
-            None => ControlFlow::Wait,
-        });
-    }
-
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        // The drop listener shares winit's Wayland connection: stop its
-        // thread now, while the connection is still open.
-        if let Some(w) = &mut self.window {
-            w.drops = None;
-        }
-        scrollback::remove_files();
-        crate::remote::remove_socket();
+        wake
     }
 }

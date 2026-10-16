@@ -35,7 +35,18 @@ pub enum DragEvent {
     },
 }
 
-/// Starts listening for drops where winit can't, which is Wayland.
+/// Names a window's Wayland surface the way drop events do, to find the
+/// window a drop is over.
+pub fn surface_key(window: &Window) -> Option<usize> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Wayland(handle) => Some(handle.surface.as_ptr() as usize),
+        _ => None,
+    }
+}
+
+/// Starts listening for drops where winit can't, which is Wayland. One
+/// listener serves every window of the app.
 pub fn listen(window: &Window, proxy: EventLoopProxy<UserEvent>) -> Option<Listener> {
     #[cfg(target_os = "linux")]
     {

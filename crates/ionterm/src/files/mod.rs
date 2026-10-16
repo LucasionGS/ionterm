@@ -50,6 +50,19 @@ pub enum FilesEvent {
     ZmodemPicked { pane: PaneId, paths: Vec<PathBuf> },
 }
 
+impl FilesEvent {
+    /// The pane whose panel or transfer it's about.
+    pub fn pane(&self) -> PaneId {
+        match self {
+            Self::Listed { pane, .. }
+            | Self::Changed { pane, .. }
+            | Self::UploadTargets { pane, .. }
+            | Self::Picked { pane, .. }
+            | Self::ZmodemPicked { pane, .. } => *pane,
+        }
+    }
+}
+
 fn send(proxy: &EventLoopProxy<UserEvent>, event: FilesEvent) {
     let _ = proxy.send_event(UserEvent::Files(event));
 }

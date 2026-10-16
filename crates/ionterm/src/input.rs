@@ -522,6 +522,12 @@ pub enum Action {
     SshConnect,
     /// Opens, focuses or closes an SSH tab's file panel.
     ToggleFiles,
+    // Windows
+    NewWindow,
+    /// Moves the active tab into a window of its own.
+    MoveTabToNewWindow,
+    /// Picks another window to move the active tab to.
+    MoveTabToWindow,
     // Panes
     /// Splits the active pane along its longer side.
     NewSplit,
@@ -542,6 +548,13 @@ pub enum Action {
     ResizeShorter,
     NextLayout,
     ToggleZoom,
+    /// Moves the active pane out into a tab of its own.
+    MovePaneToNewTab,
+    /// Moves the active pane into a window of its own.
+    MovePaneToNewWindow,
+    /// Picks where the active pane goes: a new tab or window, or another
+    /// tab (in any window) as a split.
+    MovePane,
     // Everything else
     Copy,
     Paste,
@@ -609,6 +622,12 @@ impl Action {
             "rename_tab" | "set_tab_title" => Self::RenameTab,
             "ssh_connect" | "connect_ssh" => Self::SshConnect,
             "toggle_files" | "files" | "sftp" => Self::ToggleFiles,
+            "new_os_window" | "open_window" => Self::NewWindow,
+            "move_tab_to_new_window" | "detach_tab" => Self::MoveTabToNewWindow,
+            "move_tab_to_window" => Self::MoveTabToWindow,
+            "move_pane_to_new_tab" | "detach_window" => Self::MovePaneToNewTab,
+            "move_pane_to_new_window" | "detach_pane" => Self::MovePaneToNewWindow,
+            "move_pane" | "move_pane_to" => Self::MovePane,
             "new_split" | "new_window" => Self::NewSplit,
             "split_right" => Self::SplitRight,
             "split_down" => Self::SplitDown,
@@ -660,6 +679,7 @@ impl Action {
 
 pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+t", "new_tab"),
+    ("ctrl+shift+n", "new_os_window"),
     ("ctrl+shift+q", "close_tab"),
     ("ctrl+shift+right", "next_tab"),
     ("ctrl+shift+left", "previous_tab"),

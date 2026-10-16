@@ -3,6 +3,7 @@
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
 use winit::keyboard::{Key, ModifiersState};
+use winit::window::WindowId;
 
 use crate::input::Action;
 use crate::layout::Rect;
@@ -21,6 +22,27 @@ pub enum PaletteAction {
     NewConnection,
     /// Run an action (the command palette).
     Command(Action),
+    /// Move the active tab to this window, or a new one.
+    MoveTab(Option<WindowId>),
+    /// Move the active pane somewhere else.
+    MovePane(PaneTarget),
+}
+
+impl PaletteAction {
+    /// Whether the query filters it; the rest ("New connection…") stays
+    /// at the end.
+    fn searchable(&self) -> bool {
+        !matches!(self, Self::NewConnection | Self::Edit(_))
+    }
+}
+
+/// Where "Move pane to…" puts a pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneTarget {
+    NewTab,
+    NewWindow,
+    /// Into this tab (by id, in any window), as a split.
+    Tab(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +87,15 @@ impl Palette {
         }
     }
 
+    /// A list to pick a destination from (moving tabs and panes).
+    pub fn chooser(items: Vec<PaletteItem>, placeholder: &'static str) -> Self {
+        Self {
+            placeholder,
+            footer: "↵ move   esc close",
+            ..Self::new(items, None)
+        }
+    }
+
     /// The command palette: actions first, then hosts to connect to.
     pub fn commands(items: Vec<PaletteItem>) -> Self {
         Self {
@@ -81,7 +112,7 @@ impl Palette {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| matches!(item.action, PaletteAction::Connect(_) | PaletteAction::Command(_)))
+            .filter(|(_, item)| item.action.searchable())
             .filter_map(|(i, item)| {
                 let haystack = format!("{} {} {}", item.title, item.detail, item.group);
                 fuzzy_score(self.query.text(), &haystack, item.title.len()).map(|score| (score, i))
@@ -93,7 +124,7 @@ impl Palette {
             self.items
                 .iter()
                 .enumerate()
-                .filter(|(_, item)| !matches!(item.action, PaletteAction::Connect(_) | PaletteAction::Command(_)))
+                .filter(|(_, item)| !item.action.searchable())
                 .map(|(i, _)| i),
         );
         out

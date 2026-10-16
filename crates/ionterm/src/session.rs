@@ -1,8 +1,9 @@
-//! Session restore (`[session] restore`): the window's tabs, splits,
+//! Session restore (`[session] restore`): every window's tabs, splits,
 //! directories and SSH connections are saved as they change and reopened
-//! next time. Closing the last tab yourself ends the session; closing the
-//! window (or logging out) keeps it. With several windows open, the one
-//! that saved first owns the session until it ends; the others leave it be.
+//! next time. Closing the last tab of the last window yourself ends the
+//! session; closing the window (or logging out) keeps it. With several
+//! ionterm processes open (`--standalone`), the one that saved first owns
+//! the session until it ends; the others leave it be.
 
 use std::path::PathBuf;
 
@@ -16,6 +17,33 @@ const FILE: &str = "session.toml";
 pub struct Session {
     /// The ionterm that saved it: a session still open isn't restored twice.
     pub pid: u32,
+    #[serde(default)]
+    pub windows: Vec<SavedWindow>,
+    /// A session saved before one ionterm had several windows: its only
+    /// window's tabs. `load` moves them into `windows`.
+    #[serde(default, skip_serializing)]
+    active_tab: usize,
+    #[serde(default, skip_serializing)]
+    tabs: Vec<SavedTab>,
+}
+
+impl Session {
+    pub fn new(windows: Vec<SavedWindow>) -> Self {
+        Self {
+            pid: std::process::id(),
+            windows,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.windows.iter().all(|w| w.tabs.is_empty())
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct SavedWindow {
+    #[serde(default)]
     pub active_tab: usize,
     #[serde(default)]
     pub tabs: Vec<SavedTab>,
@@ -56,14 +84,19 @@ fn path() -> Option<PathBuf> {
 /// saved it is still running.
 pub fn load() -> Option<Session> {
     let text = std::fs::read_to_string(path()?).ok()?;
-    let session: Session = match toml::from_str(&text) {
+    let mut session: Session = match toml::from_str(&text) {
         Ok(session) => session,
         Err(error) => {
             tracing::warn!("ignoring the saved session: {error}");
             return None;
         }
     };
-    if session.tabs.is_empty() || (session.pid != std::process::id() && is_running(session.pid)) {
+    if !session.tabs.is_empty() {
+        let tabs = std::mem::take(&mut session.tabs);
+        session.windows.insert(0, SavedWindow { active_tab: session.active_tab, tabs });
+    }
+    session.windows.retain(|w| !w.tabs.is_empty());
+    if session.is_empty() || (session.pid != std::process::id() && is_running(session.pid)) {
         return None;
     }
     Some(session)
@@ -192,9 +225,16 @@ mod tests {
     }
 
     #[test]
+    fn old_single_window_sessions_still_load() {
+        let text = "pid = 1\nactive_tab = 0\n\n[[tabs]]\ntree = \"0\"\n\n[[tabs.panes]]\ncwd = \"/tmp\"\n";
+        let session: Session = toml::from_str(text).unwrap();
+        assert_eq!(session.tabs.len(), 1);
+        assert!(session.windows.is_empty());
+    }
+
+    #[test]
     fn sessions_round_trip_as_toml() {
-        let session = Session {
-            pid: 42,
+        let mut session = Session::new(vec![SavedWindow {
             active_tab: 1,
             tabs: vec![
                 SavedTab {
@@ -223,7 +263,18 @@ mod tests {
                     panes: vec![SavedPane::default()],
                 },
             ],
-        };
+        }]);
+        session.windows.push(SavedWindow {
+            active_tab: 0,
+            tabs: vec![SavedTab {
+                title: None,
+                color: None,
+                layout: Layout::Stack,
+                active: 0,
+                tree: "0".into(),
+                panes: vec![SavedPane::default()],
+            }],
+        });
         let text = toml::to_string(&session).unwrap();
         assert_eq!(toml::from_str::<Session>(&text).unwrap(), session);
     }

@@ -13,6 +13,9 @@ pub enum MenuCommand {
     Duplicate,
     /// Opens the SSH tab's file panel.
     Files,
+    MoveToNewWindow,
+    /// Picks another window to move the tab to.
+    MoveToWindow,
     /// `None` removes the colour.
     Color(Option<Rgb>),
     Close,
@@ -78,9 +81,10 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     let colors = swatch_colors(theme);
     let swatch_row_width = px(8.0) + (colors.len() + 1) as f32 * step - px(6.0) + px(8.0);
     let width = (m.width * 24.0).max(px(220.0)).max(swatch_row_width + 2.0 * pad);
-    // Rename, duplicate, (files), colour label, swatches, close, close others.
+    // Rename, duplicate, move ×2, (files), colour label, swatches, close,
+    // close others.
     let files = f32::from(u8::from(menu.ssh));
-    let rows = 6.0 + files;
+    let rows = 8.0 + files;
     let height = rows * row + 2.0 * pad + px(8.0);
     // Keep the menu inside the window.
     let x = menu.x.min(window.x + window.width - width - pad).max(window.x + pad);
@@ -92,16 +96,18 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     let mut entries = vec![
         (MenuCommand::Rename, item(0.0, 0.0), "Rename tab"),
         (MenuCommand::Duplicate, item(1.0, 0.0), "Duplicate tab"),
-        (MenuCommand::Close, item(4.0 + files, separator), "Close tab"),
-        (MenuCommand::CloseOthers, item(5.0 + files, separator), "Close other tabs"),
+        (MenuCommand::MoveToNewWindow, item(2.0, 0.0), "Move to new window"),
+        (MenuCommand::MoveToWindow, item(3.0, 0.0), "Move to window…"),
+        (MenuCommand::Close, item(6.0 + files, separator), "Close tab"),
+        (MenuCommand::CloseOthers, item(7.0 + files, separator), "Close other tabs"),
     ];
     if menu.ssh {
-        entries.push((MenuCommand::Files, item(2.0, 0.0), "Files…"));
+        entries.push((MenuCommand::Files, item(4.0, 0.0), "Files…"));
     }
     // Then the "Colour" label, and the swatches.
-    let color_label = item(2.0 + files, 0.0);
+    let color_label = item(4.0 + files, 0.0);
 
-    let swatch_row = item(3.0 + files, 0.0);
+    let swatch_row = item(5.0 + files, 0.0);
     let mut swatches: Vec<(MenuCommand, Rect)> = colors
         .into_iter()
         .enumerate()

@@ -244,15 +244,13 @@ pub struct TerminalConfig {
     pub scrollback_pager: String,
     /// Listen for `ionterm @` commands from programs running as you.
     pub remote_control: bool,
-    /// Program and arguments from `ionterm -e`; overrides `shell`.
+    /// Open new windows in the ionterm that's already running (the same
+    /// program), so tabs can move between them. Needs `remote_control`.
+    pub single_instance: bool,
+    /// Program and arguments to run instead of `shell`, for panes that run a
+    /// command (an editor, the pager); never set from the file.
     #[serde(skip)]
     pub command: Vec<String>,
-    /// Host alias from `ionterm host <host>`: the first tab connects to it.
-    #[serde(skip)]
-    pub startup_host: Option<String>,
-    /// Arguments from `ionterm ssh …`: the first tab connects with them.
-    #[serde(skip)]
-    pub startup_ssh: Option<crate::ssh::SshArgs>,
 }
 
 impl Default for TerminalConfig {
@@ -267,9 +265,8 @@ impl Default for TerminalConfig {
             confirm_multiline_paste: true,
             scrollback_pager: "less -R +INPUT_LINE_NUMBER".into(),
             remote_control: true,
+            single_instance: true,
             command: Vec::new(),
-            startup_host: None,
-            startup_ssh: None,
         }
     }
 }

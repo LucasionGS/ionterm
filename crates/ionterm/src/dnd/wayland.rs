@@ -1,7 +1,8 @@
 //! Drops on Wayland, through our own `wl_data_device` on winit's connection.
 //!
 //! winit 0.30 never binds a data device, so this one is the only one and
-//! gets every drag over the window. It lives on its own event queue and
+//! gets every drag over any of the app's windows; each event names the
+//! surface it's over (`dnd::surface_key`), which the app maps to a window. It lives on its own event queue and
 //! thread: winit skips its loop iteration when socket data was only meant
 //! for another queue, so dispatching from winit's thread could leave a drop
 //! waiting. All Wayland calls stay on that thread (reading the dropped data
@@ -82,6 +83,7 @@ fn start(conn: Connection, proxy: EventLoopProxy<UserEvent>) -> anyhow::Result<L
         offer: None,
         accepted: false,
         position: (0.0, 0.0),
+        surface: 0,
         reading: None,
     };
     let thread = std::thread::Builder::new()
@@ -158,6 +160,7 @@ struct Reading {
     offer: WlDataOffer,
     data: Vec<u8>,
     position: (f64, f64),
+    surface: usize,
 }
 
 struct State {
@@ -169,12 +172,18 @@ struct State {
     /// Whether that drag carries files.
     accepted: bool,
     position: (f64, f64),
+    /// The surface the drag is over, as `dnd::surface_key` names it.
+    surface: usize,
     reading: Option<Reading>,
 }
 
 impl State {
     fn send(&self, event: DragEvent) {
-        let _ = self.proxy.send_event(UserEvent::Drag(event));
+        self.send_to(self.surface, event);
+    }
+
+    fn send_to(&self, surface: usize, event: DragEvent) {
+        let _ = self.proxy.send_event(UserEvent::Drag(Some(surface), event));
     }
 
     /// Starts reading the dropped file list; `read_drop` continues it.
@@ -205,6 +214,7 @@ impl State {
             offer,
             data: Vec::new(),
             position: self.position,
+            surface: self.surface,
         });
     }
 
@@ -235,10 +245,13 @@ impl State {
         reading.offer.destroy();
         let paths = parse_uri_list(&String::from_utf8_lossy(&reading.data));
         if !paths.is_empty() {
-            self.send(DragEvent::Dropped {
-                position: Some(reading.position),
-                paths,
-            });
+            self.send_to(
+                reading.surface,
+                DragEvent::Dropped {
+                    position: Some(reading.position),
+                    paths,
+                },
+            );
         }
     }
 }
@@ -270,11 +283,12 @@ impl Dispatch<WlDataDevice, ()> for State {
 
     fn event(state: &mut Self, _: &WlDataDevice, event: wl_data_device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
-            wl_data_device::Event::Enter { serial, x, y, id, .. } => {
+            wl_data_device::Event::Enter { serial, surface, x, y, id } => {
                 if let Some(old) = state.offer.take() {
                     old.destroy();
                 }
                 state.position = (x, y);
+                state.surface = surface.id().as_ptr() as usize;
                 state.accepted = false;
                 let Some(offer) = id else { return };
                 let files = offer

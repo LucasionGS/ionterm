@@ -8,7 +8,7 @@ use crate::layout::{self, Direction, Layout, PaneId, Rect, SplitNode};
 use crate::pane::Pane;
 
 pub struct Tab {
-    /// Stable identity across reordering (the id of the tab's first pane).
+    /// Stable identity across reordering and moves between windows.
     pub id: u64,
     /// In creation order, which next/previous pane and the non-split
     /// layouts follow.
@@ -35,8 +35,11 @@ pub struct Tab {
 
 impl Tab {
     pub fn new(pane: Pane, layout: Layout) -> Self {
+        // Not the pane's id: panes move between tabs, so a tab that lost its
+        // first pane would share its id with the pane's new tab.
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
-            id: pane.id,
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             tree: SplitNode::Leaf(pane.id),
             active: pane.id,
             panes: vec![pane],

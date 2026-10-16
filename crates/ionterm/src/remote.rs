@@ -17,20 +17,28 @@ pub const USAGE: &str = "\
 Usage: ionterm @ <command> [options]
 
 Commands:
-  ls                              List tabs and panes (tab, pane, active, cwd, title)
+  ls                              List windows, tabs and panes (window, tab, pane, active, cwd, title)
   send-text [-p PANE] <text...>   Type text into a pane (\\n, \\r, \\t, \\e and \\\\ escapes)
   get-text [-p PANE] [-a]         Print a pane's screen, or with -a its whole scrollback
   new-tab [--cwd DIR] [--title T] [command...]
                                   Open a tab, running a command or the shell; prints its pane
+  new-window [--cwd DIR] [--title T] [--host HOST | --ssh SSH-ARGS... | command...]
+                                  Open a window with a shell, a host, ssh arguments or a command;
+                                  prints its pane
   host <host>                     Open a tab connected to an ssh config host; prints its pane
   ssh [ssh options] <destination> [command]
                                   Open a tab connected with ssh arguments; prints its pane
   split [-p PANE] [--right|--down] [--cwd DIR] [command...]
                                   Split a pane; prints the new pane
+  move-tab [-p PANE] (--new-window | --window N)
+                                  Move a pane's tab to a new window, or window N of \"ls\"
+  move-pane [-p PANE] (--new-tab | --new-window | --tab N [--window N])
+                                  Move a pane to its own tab or window, or into tab N as a split
   focus -p PANE                   Show a pane and give it the keyboard
   close [-p PANE]                 Close a pane
   set-title [-p PANE] [title]     Name a pane's tab (no title goes back to automatic)
   action [-p PANE] <name>         Run a keybinding action (new_tab, toggle_zoom, search…)
+  version                         Print ionterm's version and the path of its program
 
 PANE defaults to the pane the command runs in, or else the active one.";
 
@@ -195,49 +203,92 @@ pub fn client(args: Vec<String>) -> ExitCode {
 pub fn send(args: &[String]) -> Option<std::io::Result<(u8, String)>> {
     #[cfg(unix)]
     {
-        use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
 
-        let mut stream = connect()?;
-        let pane = std::env::var("IONTERM_PANE").unwrap_or_default();
-        let mut request = Vec::new();
-        for field in std::iter::once(pane.as_str()).chain(args.iter().map(String::as_str)) {
-            request.extend_from_slice(field.as_bytes());
-            request.push(0);
-        }
-        let mut answer = String::new();
-        let sent = stream
-            .write_all(&request)
-            .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
-            .and_then(|()| stream.read_to_string(&mut answer));
-        return Some(sent.map(|_| {
-            let (code, text) = answer.split_once('\n').unwrap_or((answer.as_str(), ""));
-            (code.trim().parse().unwrap_or(1), text.to_string())
-        }));
-
-        /// `IONTERM_SOCKET`, or the newest ionterm socket that answers.
-        fn connect() -> Option<UnixStream> {
-            if let Some(path) = std::env::var_os("IONTERM_SOCKET") {
-                return UnixStream::connect(path).ok();
-            }
-            let mut sockets: Vec<_> = std::fs::read_dir(socket_dir())
-                .ok()?
-                .flatten()
-                .filter(|e| {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    name.starts_with("ionterm-") && name.ends_with(".sock")
-                })
-                .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-                .collect();
-            sockets.sort_by_key(|s| std::cmp::Reverse(s.0));
-            sockets.into_iter().find_map(|(_, path)| UnixStream::connect(path).ok())
-        }
+        let stream = match std::env::var_os("IONTERM_SOCKET") {
+            Some(path) => UnixStream::connect(path).ok()?,
+            None => sockets_newest_first().into_iter().find_map(|path| UnixStream::connect(path).ok())?,
+        };
+        Some(exchange(stream, args, None))
     }
     #[cfg(not(unix))]
     {
         let _ = args;
         None
     }
+}
+
+/// Sends a command to the ionterm listening on `socket`.
+#[cfg(unix)]
+pub fn send_to(socket: &std::path::Path, args: &[String]) -> std::io::Result<(u8, String)> {
+    exchange(std::os::unix::net::UnixStream::connect(socket)?, args, None)
+}
+
+/// The socket of a running ionterm that is this same program, for
+/// `single_instance`: a development build never hands its windows to the
+/// installed one, and an older ionterm (no `version` command) gets none.
+pub fn find_instance() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let me = std::env::current_exe().and_then(|p| p.canonicalize()).ok()?;
+        let candidates = std::env::var_os("IONTERM_SOCKET").map(PathBuf::from).into_iter().chain(sockets_newest_first());
+        for path in candidates {
+            let Ok(stream) = UnixStream::connect(&path) else { continue };
+            let Ok((0, text)) = exchange(stream, &["version".to_string()], Some(Duration::from_secs(2))) else { continue };
+            let theirs = text.lines().nth(1).and_then(|exe| std::fs::canonicalize(exe).ok());
+            if theirs.as_ref() == Some(&me) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Every ionterm socket in the runtime directory, the newest first.
+#[cfg(unix)]
+fn sockets_newest_first() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(socket_dir()) else { return Vec::new() };
+    let mut sockets: Vec<_> = entries
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("ionterm-") && name.ends_with(".sock")
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    sockets.sort_by_key(|s| std::cmp::Reverse(s.0));
+    sockets.into_iter().map(|(_, path)| path).collect()
+}
+
+/// One request and its answer: see the protocol at the top.
+#[cfg(unix)]
+fn exchange(
+    mut stream: std::os::unix::net::UnixStream,
+    args: &[String],
+    timeout: Option<std::time::Duration>,
+) -> std::io::Result<(u8, String)> {
+    use std::io::{Read, Write};
+
+    stream.set_read_timeout(timeout)?;
+    let pane = std::env::var("IONTERM_PANE").unwrap_or_default();
+    let mut request = Vec::new();
+    for field in std::iter::once(pane.as_str()).chain(args.iter().map(String::as_str)) {
+        request.extend_from_slice(field.as_bytes());
+        request.push(0);
+    }
+    let mut answer = String::new();
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    stream.read_to_string(&mut answer)?;
+    let (code, text) = answer.split_once('\n').unwrap_or((answer.as_str(), ""));
+    Ok((code.trim().parse().unwrap_or(1), text.to_string()))
 }
 
 /// Turns `\n`, `\r`, `\t`, `\e` and `\\` into the characters they name;

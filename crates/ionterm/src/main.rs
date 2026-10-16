@@ -35,7 +35,7 @@ use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 use winit::event_loop::EventLoop;
 
-use crate::app::{App, UserEvent};
+use crate::app::{App, Content, NewWindow, UserEvent};
 use crate::config::Config;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -49,6 +49,7 @@ fn print_help() {
     println!("Options:");
     println!("  -e, --exec <command>   Run <command> instead of the shell (takes the rest of the line)");
     println!("  -w, --new-window       With host or ssh: open a new window instead of a tab in the running ionterm");
+    println!("      --standalone       Start a separate ionterm instead of opening the window in the running one");
     println!("  -h, --help             Show this help");
     println!("  -v, --version          Show the version");
     println!("\nConfig: {}", config::config_dir().map_or("(none)".into(), |d| d.join(config::CONFIG_FILE).display().to_string()));
@@ -66,8 +67,12 @@ fn main() -> ExitCode {
         return remote::client(std::env::args().skip(2).collect());
     }
 
-    let mut config = Config::load();
+    let config = Config::load();
     let mut new_window = false;
+    let mut standalone = false;
+    let mut content = Content::Shell { cwd: None };
+    // `ionterm ssh`'s arguments as given, to hand them to a running ionterm.
+    let mut ssh_given = Vec::new();
     // `host` and `ssh` go to a running ionterm as a new tab, unless asked not to.
     let mut forward = None;
     let mut args = std::env::args().skip(1);
@@ -87,14 +92,15 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 };
                 forward = Some(vec!["host".to_string(), host.clone()]);
-                config.terminal.startup_host = Some(host);
+                content = Content::Host(host);
             }
             "ssh" => {
                 let given: Vec<String> = args.by_ref().collect();
                 match ssh::detect::parse_args(&given) {
                     Ok(parsed) => {
-                        config.terminal.startup_ssh = Some(parsed);
-                        forward = Some(std::iter::once("ssh".to_string()).chain(given).collect());
+                        content = Content::Ssh(parsed);
+                        forward = Some(std::iter::once("ssh".to_string()).chain(given.iter().cloned()).collect());
+                        ssh_given = given;
                     }
                     Err(message) => {
                         eprintln!("{message} Usage: ionterm ssh [ssh options] <destination> [command]");
@@ -103,12 +109,14 @@ fn main() -> ExitCode {
                 }
             }
             "-w" | "--new-window" => new_window = true,
+            "--standalone" => standalone = true,
             "-e" | "--exec" => {
-                config.terminal.command = args.by_ref().collect();
-                if config.terminal.command.is_empty() {
+                let argv: Vec<String> = args.by_ref().collect();
+                if argv.is_empty() {
                     eprintln!("Missing command after {arg}. Usage: ionterm -e <command> [args...]");
                     return ExitCode::from(2);
                 }
+                content = Content::Command { argv, cwd: None };
             }
             other => {
                 eprintln!("Unknown option: {other}. Run \"ionterm --help\" for usage.");
@@ -117,7 +125,7 @@ fn main() -> ExitCode {
         }
     }
 
-    if let Some(command) = forward.filter(|_| !new_window) {
+    if let Some(command) = forward.filter(|_| !new_window && !standalone) {
         match remote::send(&command) {
             Some(Ok((0, _))) => return ExitCode::SUCCESS,
             // An older ionterm without these commands: open a window instead.
@@ -131,6 +139,11 @@ fn main() -> ExitCode {
         }
     }
 
+    let single = !standalone && config.terminal.single_instance && config.terminal.remote_control;
+    if single && let Some(code) = hand_off(&content, &ssh_given) {
+        return code;
+    }
+
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
@@ -138,7 +151,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut app = App::new(event_loop.create_proxy(), config);
+    let mut app = App::new(event_loop.create_proxy(), config, NewWindow::new(content));
     if let Err(error) = event_loop.run_app(&mut app) {
         eprintln!("ionterm stopped unexpectedly: {error}");
         return ExitCode::FAILURE;
@@ -149,5 +162,47 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         None => ExitCode::SUCCESS,
+    }
+}
+
+/// Opens the window in the ionterm already running this same program
+/// (`single_instance`), in this directory. Returns the exit code when that
+/// ionterm took it (or said why it couldn't); `None` to open it here.
+fn hand_off(content: &Content, ssh_given: &[String]) -> Option<ExitCode> {
+    let socket = remote::find_instance()?;
+    let mut args = vec!["new-window".to_string()];
+    if let Ok(dir) = std::env::current_dir() {
+        args.extend(["--cwd".into(), dir.display().to_string()]);
+    }
+    // Lets the compositor give the window the keyboard, as it would ours.
+    if let Ok(token) = std::env::var("XDG_ACTIVATION_TOKEN") {
+        args.extend(["--activation-token".into(), token]);
+    }
+    match content {
+        Content::Host(host) => args.extend(["--host".into(), host.clone()]),
+        Content::Ssh(_) => {
+            args.push("--ssh".into());
+            args.extend(ssh_given.iter().cloned());
+        }
+        Content::Command { argv, .. } => {
+            args.push("--".into());
+            args.extend(argv.iter().cloned());
+        }
+        Content::Shell { .. } | Content::Tabs(..) | Content::Restore(_) => {}
+    }
+    #[cfg(unix)]
+    match remote::send_to(&socket, &args) {
+        Ok((0, _)) => Some(ExitCode::SUCCESS),
+        Ok((code, text)) => {
+            eprintln!("{}", text.trim_end());
+            Some(ExitCode::from(code))
+        }
+        // It went away meanwhile: open the window here.
+        Err(_) => None,
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (socket, args);
+        None
     }
 }

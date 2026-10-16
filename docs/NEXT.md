@@ -75,7 +75,8 @@ crates/ionterm/          the app
   dialog.rs              generic modal: buttons, optional input and checkbox
   app/                   files.rs (panel requests, conflicts, toasts, transfer card), drag.rs (drop targets), rzsz.rs (ZMODEM glue),
                          integration.rs (prompt jumps, output copy/select, failed marks, tab progress), hints.rs (hints overlay),
-                         settings.rs (settings tab, config writes, $EDITOR in the tab)
+                         settings.rs (settings tab, config writes, $EDITOR in the tab),
+                         windows.rs (several windows: the current/parked switch, opening and closing, moving tabs and panes, tab drag-out)
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
   shell.rs               shell integration for the local login shell (scripts in extras/shell-integration/)
   remote.rs              `ionterm @`: socket, client, request parsing (commands run in app/remote.rs)
@@ -124,7 +125,21 @@ Patterns to follow:
 - **Tools installed:** `kitten`, `chafa`, `yazi`, ImageMagick `magick`, `sftp`, `scp`, `rsync` 3.5, `gamescope`, `xdotool`. Not installed: `lrzsz` (not on `ionserver` either).
 - **Their test server:** `ionserver` (Ubuntu, bash 5.2, zsh and rsync 3.2.7 installed, no lrzsz) is fine to test against; they offered it. Clean up anything you create there.
 
-**Driving ionterm through Hyprland: always use `scripts/drive.sh`.** Claude Code runs inside the user's **kitty**, which is normally the focused window. A dispatch with an empty or stale pid (`window = "pid:"`) can land on kitty, and test keys like ctrl+d, Escape or Return then hit Claude Code itself. A previous session lost its own terminal this way. `drive.sh` only sends keys to, or kills, the window it launched, after checking that it is a live `ionterm` window and not an ancestor of the shell. Never use `pkill`/`killall`, `killactive`, or a dispatch without a verified `window =`.
+**Claude Code now runs inside the user's own ionterm** (installed `/usr/bin/ionterm`, an older build without single-instance support). Its shell has the user's `IONTERM_SOCKET` and `IONTERM_PANE`, so:
+- Never run a test build, `ionterm @ …` or `ionterm host/ssh` with that environment: it would open tabs in, or send commands to, the user's terminal. Never kill an `ionterm` you didn't start (`pgrep -f` patterns also match your own shell's command line: kill only recorded pids).
+- The safe harness (rebuild it in the scratchpad if it's gone): headless **cage** with its Wayland socket inside a private runtime dir, and an `iso.sh` wrapper for everything that touches the test instance:
+  ```bash
+  # iso.sh: env -u IONTERM_SOCKET -u IONTERM_PANE -u DISPLAY -u XDG_ACTIVATION_TOKEN -u HYPRLAND_INSTANCE_SIGNATURE \
+  #   XDG_RUNTIME_DIR=/run/user/1000/ionterm-test WAYLAND_DISPLAY=$TEST_WAYLAND HOME=$SCRATCH/fh XDG_CONFIG_HOME=… XDG_STATE_HOME=… SHELL=/bin/bash "$@"
+  setsid -f env -u WAYLAND_DISPLAY -u DISPLAY XDG_RUNTIME_DIR=/run/user/1000/ionterm-test WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+    sh -c 'echo $$ > cage.pid; exec cage -- launch.sh'   # launch.sh records its pid, then execs iso.sh ionterm
+  TEST_WAYLAND=wayland-0 iso.sh ionterm @ ls             # remote control the test instance
+  TEST_WAYLAND=wayland-0 iso.sh grim shot.png            # screenshot it
+  ```
+  The runtime dir must be short (Unix sockets max 108 bytes, so not the scratchpad). Use `setsid -f`: background jobs of a finished command get killed. Set `[window] opacity = 1.0` in the test config, or windows stacked by cage show through each other. cage has no input devices, so keys and the mouse can't be tested there; drive through `ionterm @` (`action` runs any keybinding action).
+- **gamescope's headless backend segfaults when a second Vulkan window opens** (three core dumps), so it's no good for multi-window tests.
+
+**Driving ionterm through Hyprland: always use `scripts/drive.sh`.** Claude Code runs inside a terminal of the user's (now their ionterm), which is normally the focused window. A dispatch with an empty or stale pid (`window = "pid:"`) can land on it, and test keys like ctrl+d, Escape or Return then hit Claude Code itself. A previous session lost its own terminal this way. `drive.sh` only sends keys to, or kills, the window it launched, after checking that it is a live `ionterm` window and not an ancestor of the shell. Never use `pkill`/`killall`, `killactive`, or a dispatch without a verified `window =`.
 ```bash
 scripts/drive.sh launch "/home/ion/development/ionterm/target/release/ionterm"   # the user's real env; waits for the new window, floats it, 1200x650
 scripts/drive.sh key "CTRL SHIFT" t     # to that window only; aborts (exit 9) if it is gone
@@ -188,5 +203,5 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
   - Windows polish (own titlebar, installer).
   - `ionterm @` over a Windows named pipe (Unix socket done: `remote.rs`, `app/remote.rs`).
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
-- **v0.5 (chosen by the user, see PLAN.md):** tabs between windows, edit remote files locally, port forwards from the tab, command blocks you can act on. The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
+- **v0.5 (chosen by the user, see PLAN.md):** ~~tabs between windows~~ (done), edit remote files locally, port forwards from the tab, command blocks you can act on. The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
 - **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there, and so do command info on hover, clear scrollback and `ionterm @ ls` (remote directory). Reconnect after a dropped connection is still only tested against the fake-ssh setup.

@@ -222,11 +222,15 @@ Picked from a brainstorm of what would make ionterm the ideal terminal for dev w
 **Tabs between windows**
 
 Today every window is its own process with its own socket (`ionterm-<pid>.sock`), so a tab can't simply change windows.
-- [ ] One process for every window (kitty's single instance): `ionterm` hands off to the running instance over the socket and opens a window there, unless `--new-window`/`--standalone` asks for a separate process. Also makes new windows start faster and simplifies session ownership. Alternative considered: passing the PTY fd between processes (`SCM_RIGHTS`), but the shell's parent would still be the old process, so its exit code is lost.
-- [ ] Drag a tab out of the tab bar to make it a window of its own; drop it on another window's tab bar to move it there (with the drag-to-reorder animation on the target)
-- [ ] Without the mouse: "Move tab to new window" and "Move tab to window…" (a picker listing windows by their active tab) in the tab menu and the palette; `ionterm @ move-tab --to <window>|--new-window`
-- [ ] Panes keep their scrollback, images, SSH connection, file panel and transfers when they move
-- Open questions: should a single pane be able to move into another window as a split, or only whole tabs? Should session restore save several windows?
+- [x] One process for every window (kitty's single instance, `[terminal] single_instance`): `ionterm` asks a running ionterm that is the same program (`ionterm @ version` names its path) to open the window (`new-window`, with the directory and activation token) and exits; `--standalone` opts out. Alternative considered: passing the PTY fd between processes (`SCM_RIGHTS`), but the shell's parent would still be the old process, so its exit code is lost.
+- [x] `App::window` is the window being worked on and `App::parked` the others; every event selects its window first (`app/windows.rs`), so the rest of the app still deals with one window. Panes, transfers (ids now global) and file drops (one Wayland listener, events tagged with their surface) are routed to their window
+- [x] New window (ctrl+shift+n, `new_os_window`), in the active pane's directory
+- [x] Drag a tab out of the tab bar (48 px past it or the window's sides) and let go: it opens in a window of its own, or moves into the ionterm window the pointer lands on (at the tab bar slot under it)
+- [x] Without the mouse: "Move to new window" and "Move to window…" in the tab menu, the palette and as actions; `ionterm @ move-tab (--new-window | --window N)`
+- [x] Single panes too: "Move pane to…" picks a new tab, a new window or any other tab (in any window) to split into; `move_pane_to_new_tab`, `move_pane_to_new_window`; `ionterm @ move-pane (--new-tab | --new-window | --tab N [--window N])`
+- [x] Panes keep their shell, scrollback, images, SSH connection and transfers when they move; a tab keeps its file panel (a pane moving alone closes the panel it browsed with)
+- [x] Session restore saves every window (`[[windows]]` in `session.toml`; older one-window files still load). Windows opened for one thing (`-e`, `host`, `ssh`) aren't saved, and the first plain window an ionterm opens is the one that restores
+- [x] `ionterm @ ls` has a window column; `new-window [--cwd] [--title] [--host H | --ssh ARGS… | command…]`; `version`
 
 **Edit remote files locally**
 

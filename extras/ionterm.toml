@@ -26,6 +26,7 @@ wheel_scroll_lines = 3
 advertise_sixel = false              # sixel always displays; announcing it makes yazi pick sixel over kitty graphics
 confirm_multiline_paste = true       # ask before pasting lines that would each run immediately (no bracketed paste)
 remote_control = true                # "ionterm @ ls", "ionterm @ send-text …": scripts drive ionterm over a socket only you can open
+single_instance = true               # new windows open in the running ionterm, so tabs can move between windows ("ionterm --standalone" opts out)
 scrollback_pager = "less -R +INPUT_LINE_NUMBER"   # ctrl+shift+h; INPUT_LINE_NUMBER = the line on screen, the file goes last
 shell_integration = true             # mark prompts in bash/zsh/fish 3 (fish 4 does it itself): prompt jumps, output selection, failed marks
 
@@ -72,6 +73,10 @@ trail = false                        # a short fading streak behind the cursor w
 # "ctrl+shift+alt+t" = "rename_tab"
 # "alt+1" = "goto_tab 1"                     (alt+1 … alt+9)
 #
+# Windows
+# "ctrl+shift+n" = "new_os_window"
+# Unbound by default: move_tab_to_new_window, move_tab_to_window (picks one)
+#
 # Panes
 # "ctrl+shift+enter" = "new_split"           (splits along the longer side)
 # "ctrl+shift+w" = "close_pane"
@@ -82,7 +87,9 @@ trail = false                        # a short fading streak behind the cursor w
 # "ctrl+shift+l" = "next_layout"
 # "ctrl+shift+b" = "toggle_broadcast"      (type into every pane of the tab)
 # Unbound by default: split_right, split_down, focus_left/right/up/down,
-# resize_wider/narrower/taller/shorter, toggle_zoom
+# resize_wider/narrower/taller/shorter, toggle_zoom, move_pane_to_new_tab,
+# move_pane_to_new_window, move_pane (picks a new tab, a new window or
+# another tab to split into)
 #
 # Everything else
 # "ctrl+shift+c" = "copy"
