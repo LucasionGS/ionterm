@@ -154,7 +154,7 @@ impl App {
         let Some(w) = &mut self.window else { return false };
         let config = &self.config;
         let Some(page) = w.tabs[w.active_tab].settings.as_mut().filter(|p| !p.editing) else { return false };
-        let request = page.key(&event.logical_key, event.text.as_deref(), config);
+        let request = page.key(&event.logical_key, event.text.as_deref(), w.modifiers, config);
         w.window.request_redraw();
         if let Some(request) = request {
             self.settings_request(request);
@@ -171,8 +171,12 @@ impl App {
         }
         let target = settings::hit(&layout, x, y);
         let config = &self.config;
+        let (m, scale, extend) = (w.renderer.cell_metrics(), w.scale_factor as f32, w.modifiers.shift_key());
         let Some(page) = w.tabs[w.active_tab].settings.as_mut() else { return false };
         let request = page.click(target, config);
+        if matches!(target, Some(settings::Target::Text(_))) {
+            page.place_caret(&layout, x, m, scale, extend);
+        }
         w.window.request_redraw();
         if let Some(request) = request {
             self.settings_request(request);
@@ -185,9 +189,10 @@ impl App {
         let Some(w) = &mut self.window else { return false };
         let Some(page) = w.tabs[w.active_tab].settings.as_mut().filter(|p| !p.editing) else { return false };
         if let Some(typing) = &mut page.typing {
-            typing.push_str(text.lines().next().unwrap_or_default());
+            typing.insert(text);
         } else if let Some(picker) = &mut page.picker {
-            picker.filter.push_str(text.lines().next().unwrap_or_default());
+            picker.filter.insert(text);
+            picker.selected = 0;
         }
         w.window.request_redraw();
         true

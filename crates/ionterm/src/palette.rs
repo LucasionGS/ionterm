@@ -2,10 +2,12 @@
 
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
+use winit::keyboard::{Key, ModifiersState};
 
 use crate::input::Action;
 use crate::layout::Rect;
 use crate::tabbar::{mix, truncate};
+use crate::textfield::{Edit, TextField};
 use crate::theme::Theme;
 
 const MAX_VISIBLE_ROWS: usize = 10;
@@ -34,7 +36,7 @@ pub struct PaletteItem {
 
 pub struct Palette {
     pub items: Vec<PaletteItem>,
-    pub query: String,
+    pub query: TextField,
     /// Position in the filtered list.
     pub selected: usize,
     /// First filtered row shown.
@@ -53,7 +55,7 @@ impl Palette {
     pub fn new(items: Vec<PaletteItem>, anchor: Option<(f32, f32)>) -> Self {
         Self {
             items,
-            query: String::new(),
+            query: TextField::default(),
             selected: 0,
             scroll: 0,
             anchor,
@@ -82,7 +84,7 @@ impl Palette {
             .filter(|(_, item)| matches!(item.action, PaletteAction::Connect(_) | PaletteAction::Command(_)))
             .filter_map(|(i, item)| {
                 let haystack = format!("{} {} {}", item.title, item.detail, item.group);
-                fuzzy_score(&self.query, &haystack, item.title.len()).map(|score| (score, i))
+                fuzzy_score(self.query.text(), &haystack, item.title.len()).map(|score| (score, i))
             })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -126,13 +128,19 @@ impl Palette {
     }
 
     pub fn type_text(&mut self, text: &str) {
-        self.query.push_str(text);
-        self.selected = 0;
-        self.scroll = 0;
+        self.query.insert(text);
+        self.query_changed();
     }
 
-    pub fn backspace(&mut self) {
-        self.query.pop();
+    /// Feeds an editing key to the search field.
+    pub fn edit(&mut self, key: &Key, text: Option<&str>, mods: ModifiersState) {
+        if self.query.key(key, text, mods) == Some(Edit::Changed) {
+            self.query_changed();
+        }
+    }
+
+    /// The query changed: back to the best match.
+    fn query_changed(&mut self) {
         self.selected = 0;
         self.scroll = 0;
     }
@@ -274,25 +282,8 @@ pub fn draw(palette: &Palette, layout: &PaletteLayout, theme: &Theme, m: CellMet
             color: muted,
             bold: false,
         });
-    } else {
-        let shown: String = {
-            let chars: Vec<char> = palette.query.chars().collect();
-            chars[chars.len().saturating_sub(query_cols)..].iter().collect()
-        };
-        out.push(ChromeItem::Text {
-            text: shown.clone(),
-            x: query_x,
-            y: text_y,
-            color: fg,
-            bold: false,
-        });
     }
-    let caret_cols = text_columns(&palette.query).min(query_cols);
-    out.push(ChromeItem::Rect {
-        rect: [query_x + caret_cols as f32 * m.width, text_y, (2.0 * scale).round(), m.height],
-        color: accent,
-        alpha: 1.0,
-    });
+    palette.query.draw(query_x, text_y, query_cols, fg, accent, true, m, scale, out);
 
     // Rows.
     for &(position, item_index, r) in &layout.rows {
@@ -394,7 +385,7 @@ mod tests {
         assert_eq!(p.matches(), [0, 1, 2, 3]);
         p.type_text("hos");
         assert_eq!(p.matches(), [1, 3]);
-        p.query = "wp".into();
+        p.query.set("wp");
         assert_eq!(p.matches()[0], 2);
         p.move_selection(5);
         assert_eq!(p.selected_action(), Some(PaletteAction::NewConnection));

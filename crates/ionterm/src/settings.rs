@@ -8,11 +8,12 @@
 
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::config::{Config, SettingValue};
 use crate::layout::Rect;
 use crate::tabbar::{mix, readable_on, truncate};
+use crate::textfield::{Edit, TextField};
 use crate::theme::Theme;
 
 //#region The settings
@@ -254,7 +255,7 @@ pub enum Target {
 
 pub struct FontPicker {
     pub families: Vec<String>,
-    pub filter: String,
+    pub filter: TextField,
     pub selected: usize,
     pub scroll: usize,
 }
@@ -269,14 +270,14 @@ impl FontPicker {
         let selected = families.iter().position(|f| f == current).unwrap_or(0);
         Self {
             families,
-            filter: String::new(),
+            filter: TextField::default(),
             selected,
             scroll: selected.saturating_sub(4),
         }
     }
 
     pub fn shown(&self) -> Vec<&String> {
-        let filter = self.filter.to_lowercase();
+        let filter = self.filter.text().to_lowercase();
         self.families.iter().filter(|f| f.to_lowercase().contains(&filter)).collect()
     }
 }
@@ -288,7 +289,7 @@ pub struct SettingsPage {
     /// Rows scrolled off the top.
     pub scroll: usize,
     /// The text being typed into a text setting.
-    pub typing: Option<String>,
+    pub typing: Option<TextField>,
     pub picker: Option<FontPicker>,
     pub hover: Option<Target>,
     /// A config file is open in the editor in this tab.
@@ -386,7 +387,7 @@ impl SettingsPage {
             Control::Choice(_) => self.step(row, 1, config),
             Control::Text { .. } => {
                 if let Value::Text(text) = value_of(config, setting) {
-                    self.typing = Some(text);
+                    self.typing = Some(TextField::new(text));
                 }
                 None
             }
@@ -397,9 +398,9 @@ impl SettingsPage {
     }
 
     /// A key press. Returns what to do, if anything.
-    pub fn key(&mut self, key: &Key, text: Option<&str>, config: &Config) -> Option<Request> {
+    pub fn key(&mut self, key: &Key, text: Option<&str>, mods: ModifiersState, config: &Config) -> Option<Request> {
         if let Some(picker) = &mut self.picker {
-            return picker_key(picker, key, text).map(|picked| {
+            return picker_key(picker, key, text, mods).map(|picked| {
                 self.picker = None;
                 let setting = SECTIONS[0].settings.iter().find(|s| matches!(s.control, Control::Font)).expect("a font row");
                 picked.map(|family| Self::set(setting, Value::Text(family), &Config::default()))
@@ -408,19 +409,14 @@ impl SettingsPage {
         if let Some(typing) = &mut self.typing {
             match key {
                 Key::Named(NamedKey::Enter) => {
-                    let text = std::mem::take(typing).trim().to_string();
+                    let text = typing.text().trim().to_string();
                     self.typing = None;
                     let setting = self.settings().get(self.focus)?;
                     return Some(Self::set(setting, Value::Text(text), &Config::default()));
                 }
                 Key::Named(NamedKey::Escape) => self.typing = None,
-                Key::Named(NamedKey::Backspace) => {
-                    typing.pop();
-                }
                 _ => {
-                    if let Some(text) = text.filter(|t| !t.chars().any(char::is_control)) {
-                        typing.push_str(text);
-                    }
+                    typing.key(key, text, mods);
                 }
             }
             return None;
@@ -513,6 +509,16 @@ impl SettingsPage {
         None
     }
 
+    /// A click at `x` in the field being typed in puts the caret there, or
+    /// extends the selection to it.
+    pub fn place_caret(&mut self, layout: &PageLayout, x: f32, m: CellMetrics, scale: f32, extend: bool) {
+        let Some(typing) = &mut self.typing else { return };
+        let Some(row) = layout.rows.iter().find(|r| r.index == self.focus) else { return };
+        if let Some((_, r)) = row.parts.first() {
+            typing.click((x - r.x - (10.0 * scale).round()) / m.width, extend);
+        }
+    }
+
     /// The mouse wheel over the page (or the font list).
     pub fn scroll_by(&mut self, lines: isize) {
         if let Some(picker) = &mut self.picker {
@@ -526,7 +532,7 @@ impl SettingsPage {
 }
 
 /// Keys in the font picker: `Some(Some(family))` picks, `Some(None)` closes.
-fn picker_key(picker: &mut FontPicker, key: &Key, text: Option<&str>) -> Option<Option<String>> {
+fn picker_key(picker: &mut FontPicker, key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<Option<String>> {
     let count = picker.shown().len();
     match key {
         Key::Named(NamedKey::Escape) => return Some(None),
@@ -535,13 +541,8 @@ fn picker_key(picker: &mut FontPicker, key: &Key, text: Option<&str>) -> Option<
         Key::Named(NamedKey::ArrowDown) => picker.selected = (picker.selected + 1).min(count.saturating_sub(1)),
         Key::Named(NamedKey::PageUp) => picker.selected = picker.selected.saturating_sub(10),
         Key::Named(NamedKey::PageDown) => picker.selected = (picker.selected + 10).min(count.saturating_sub(1)),
-        Key::Named(NamedKey::Backspace) => {
-            picker.filter.pop();
-            picker.selected = 0;
-        }
         _ => {
-            if let Some(text) = text.filter(|t| !t.chars().any(char::is_control)) {
-                picker.filter.push_str(text);
+            if picker.filter.key(key, text, mods) == Some(Edit::Changed) {
                 picker.selected = 0;
             }
         }
@@ -832,24 +833,13 @@ pub fn draw(page: &SettingsPage, layout: &PageLayout, ctx: &DrawContext, theme: 
                 }
                 out.push(rounded(r, px(6.0), control_bg));
                 let cols = ((r.width - px(20.0)) / m.width) as usize;
-                let (shown, color) = match (&page.typing, &value) {
-                    (Some(t), _) if typing => {
-                        let chars: Vec<char> = t.chars().collect();
-                        (chars[chars.len().saturating_sub(cols.saturating_sub(1))..].iter().collect::<String>(), fg)
-                    }
-                    (_, Value::Text(t)) if !t.is_empty() => (truncate(t, cols), fg),
-                    _ => (truncate(placeholder, cols), faint),
-                };
                 let y = r.y + ((r.height - m.height) / 2.0).round();
                 let x = r.x + px(10.0);
-                if typing {
-                    out.push(ChromeItem::Rect {
-                        rect: [x + text_columns(&shown) as f32 * m.width, y, px(2.0), m.height],
-                        color: accent,
-                        alpha: 1.0,
-                    });
+                match (&page.typing, &value) {
+                    (Some(field), _) if typing => field.draw(x, y, cols, fg, accent, true, m, scale, out),
+                    (_, Value::Text(t)) if !t.is_empty() => out.push(text(truncate(t, cols), x, y, fg, false)),
+                    _ => out.push(text(truncate(placeholder, cols), x, y, faint, false)),
                 }
-                out.push(text(shown, x, y, color, false));
             }
             Control::Font => {
                 let r = row.parts[0].1;
@@ -906,8 +896,13 @@ pub fn draw(page: &SettingsPage, layout: &PageLayout, ctx: &DrawContext, theme: 
         out.push(rounded(pl.panel, px(10.0), mix(bg, fg, 0.06)));
         out.push(rounded(pl.search, px(6.0), control_bg));
         let y = pl.search.y + ((pl.search.height - m.height) / 2.0).round();
-        let (shown, color) = if picker.filter.is_empty() { ("Search fonts".to_string(), faint) } else { (picker.filter.clone(), fg) };
-        out.push(text(format!("\u{F0349}  {shown}"), pl.search.x + px(10.0), y, color, false));
+        out.push(text("\u{F0349}".into(), pl.search.x + px(10.0), y, faint, false));
+        let filter_x = pl.search.x + px(10.0) + 3.0 * m.width;
+        let cols = ((pl.search.x + pl.search.width - px(10.0) - filter_x) / m.width).max(1.0) as usize;
+        if picker.filter.is_empty() {
+            out.push(text("Search fonts".into(), filter_x, y, faint, false));
+        }
+        picker.filter.draw(filter_x, y, cols, fg, accent, true, m, scale, out);
         let fonts = picker.shown();
         for (i, r) in &pl.rows {
             let Some(family) = fonts.get(*i) else { continue };
@@ -1031,10 +1026,10 @@ mod tests {
         );
         // Typing into the shell field, then Enter.
         page.select_section(2);
-        assert_eq!(page.key(&Key::Named(NamedKey::Enter), None, &config), None);
-        page.key(&Key::Character("f".into()), Some("fish"), &config);
+        assert_eq!(page.key(&Key::Named(NamedKey::Enter), None, ModifiersState::empty(), &config), None);
+        page.key(&Key::Character("f".into()), Some("fish"), ModifiersState::empty(), &config);
         assert_eq!(
-            page.key(&Key::Named(NamedKey::Enter), None, &config),
+            page.key(&Key::Named(NamedKey::Enter), None, ModifiersState::empty(), &config),
             Some(Request::Set {
                 section: "terminal",
                 key: "shell",

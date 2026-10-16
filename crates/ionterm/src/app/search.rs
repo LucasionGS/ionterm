@@ -47,7 +47,7 @@ impl TermWindow {
             state.bar.set_matches(Vec::new(), 0);
             return;
         }
-        match search::compile(&state.bar.query, state.bar.regex) {
+        match search::compile(state.bar.query.text(), state.bar.regex) {
             Ok(pattern) => {
                 let term = pane.lock();
                 let matches = search::find_all(&term, &pattern);
@@ -142,7 +142,7 @@ impl App {
                 // The selection, if one line, is a good first query.
                 let query = w.active_pane().selected_text().filter(|t| !t.contains('\n')).unwrap_or_default();
                 let mut bar = Search::new();
-                bar.query = query;
+                bar.query.set(query);
                 w.search = Some(SearchState {
                     pane,
                     bar,
@@ -158,9 +158,9 @@ impl App {
 
     pub(super) fn search_key(&mut self, event: &KeyEvent) {
         let Some(w) = &mut self.window else { return };
-        let (shift, alt) = (w.modifiers.shift_key(), w.modifiers.alt_key());
+        let mods = w.modifiers;
         let Some(state) = &mut w.search else { return };
-        let request = state.bar.key(&event.logical_key, event.text.as_deref(), shift, alt);
+        let request = state.bar.key(&event.logical_key, event.text.as_deref(), mods);
         self.search_request(request);
     }
 
@@ -175,8 +175,12 @@ impl App {
             }
             return false;
         };
+        let (m, scale, extend) = (w.renderer.cell_metrics(), w.scale_factor as f32, w.modifiers.shift_key());
         let Some(state) = &mut w.search else { return false };
         let request = state.bar.click(target);
+        if target == search::Target::Input {
+            state.bar.query.click((x - search::text_x(&layout, m, scale)) / m.width, extend);
+        }
         self.search_request(request);
         true
     }
@@ -207,7 +211,7 @@ impl App {
             return false;
         }
         if let Some(state) = &mut w.search {
-            state.bar.query.push_str(text.lines().next().unwrap_or_default());
+            state.bar.query.insert(text);
         }
         self.search_request(Some(Request::Search));
         true

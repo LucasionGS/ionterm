@@ -25,6 +25,7 @@ mod shell;
 mod ssh;
 mod tab;
 mod tabbar;
+mod textfield;
 mod theme;
 mod zmodem;
 

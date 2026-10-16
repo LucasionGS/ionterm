@@ -48,6 +48,7 @@ use crate::ssh::{self, Connection, HostExtras};
 use crate::pane::{Pane, SelectionKind, SelectionState};
 use crate::tab::Tab;
 use crate::tabbar::{self, Activity, Hit, TabInfo};
+use crate::textfield::TextField;
 use crate::notifications;
 use crate::theme::Theme;
 
@@ -180,7 +181,7 @@ struct TabDrag {
 /// A tab title being edited in place.
 struct Rename {
     tab: usize,
-    text: String,
+    field: TextField,
 }
 
 /// What a tab bar click asks for, run once the window borrow ends.
@@ -657,7 +658,7 @@ impl App {
 
     fn paste(&mut self, primary: bool) {
         let Some(text) = self.get_clipboard(primary) else { return };
-        if self.settings_paste(&text) || self.search_paste(&text) {
+        if self.field_insert(&text) {
             return;
         }
         let Some(w) = &mut self.window else { return };
@@ -685,6 +686,55 @@ impl App {
         }
         let id = pane.id;
         w.paste_into(id, &text);
+    }
+
+    /// Puts pasted text into the text field that has the keyboard, the way
+    /// its owner takes typing. Returns whether something took it.
+    fn field_insert(&mut self, text: &str) -> bool {
+        let Some(w) = &mut self.window else { return false };
+        if let Some(open) = &mut w.dialog {
+            open.paste(text);
+        } else if let Some(form) = &mut w.editor {
+            form.type_text(text);
+        } else if let Some(picker) = &mut w.palette {
+            picker.type_text(text);
+        } else if let Some(rename) = w.rename.as_mut().filter(|_| w.menu.is_none()) {
+            rename.field.insert(text);
+        } else {
+            return self.settings_paste(text) || self.search_paste(text);
+        }
+        w.window.request_redraw();
+        true
+    }
+
+    /// Copy, cut and paste in the text field that has the keyboard: ctrl+c,
+    /// ctrl+x and ctrl+v, with or without shift, and ctrl+insert and
+    /// shift+insert. Returns whether the key was one of those.
+    fn field_clipboard_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        let Some(w) = &self.window else { return false };
+        let mods = w.modifiers;
+        let Some(combo) = KeyCombo::from_event(event, mods) else { return false };
+        let (ctrl, shift) = (mods.control_key(), mods.shift_key());
+        let command = match combo.key.as_str() {
+            _ if mods.alt_key() => return false,
+            "c" | "x" | "v" if ctrl => combo.key.as_str(),
+            "insert" if ctrl && !shift => "c",
+            "insert" if shift && !ctrl => "v",
+            _ => return false,
+        };
+        let Some(field) = w.focused_field() else { return false };
+        match command {
+            "v" => self.paste(false),
+            cut_or_copy => {
+                if let Some(text) = field.selected_text().map(String::from) {
+                    self.set_clipboard(text, false);
+                    if cut_or_copy == "x" {
+                        self.field_insert("");
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn copy_selection(&mut self, primary: bool) {
@@ -1423,7 +1473,11 @@ impl App {
             }
             let layout = dialog::layout(open, m, scale, window_rect);
             w.window.request_redraw();
-            return Some(open.click(dialog::hit(&layout, x as f32, y as f32)).map(BarAction::Dialog));
+            let target = dialog::hit(&layout, x as f32, y as f32);
+            if target == Some(Some(dialog::Target::Input)) {
+                open.place_caret(&layout, x as f32, m, scale, w.modifiers.shift_key());
+            }
+            return Some(open.click(target).map(BarAction::Dialog));
         }
         // The form is modal: it takes every click while open.
         if let Some(form) = &mut w.editor {
@@ -1432,12 +1486,12 @@ impl App {
             }
             let layout = editor::layout(form, m, scale, window_rect);
             w.window.request_redraw();
-            return Some(
-                editor::hit(&layout, x as f32, y as f32)
-                    .flatten()
-                    .and_then(|target| form.click(target))
-                    .map(BarAction::Form),
-            );
+            let target = editor::hit(&layout, x as f32, y as f32).flatten();
+            let outcome = target.and_then(|target| form.click(target));
+            if matches!(target, Some(editor::Target::Field(_))) {
+                form.place_caret(&layout, x as f32, m, scale, w.modifiers.shift_key());
+            }
+            return Some(outcome.map(BarAction::Form));
         }
         // The picker takes clicks while open: a row runs it, outside closes it.
         if let Some(picker) = &w.palette {
@@ -2086,7 +2140,10 @@ impl TermWindow {
     /// Starts editing a tab's title in place, starting from what it shows now.
     fn start_rename(&mut self, tab: usize, config: &Config) {
         let Some(info) = self.tab_infos(config).into_iter().nth(tab) else { return };
-        self.rename = Some(Rename { tab, text: info.title });
+        self.rename = Some(Rename {
+            tab,
+            field: TextField::new(info.title),
+        });
         self.tab_drag = None;
         self.window.request_redraw();
     }
@@ -2096,7 +2153,7 @@ impl TermWindow {
         if let Some(rename) = self.rename.take()
             && let Some(tab) = self.tabs.get_mut(rename.tab)
         {
-            let text = rename.text.trim().to_string();
+            let text = rename.field.text().trim().to_string();
             tab.custom_title = (!text.is_empty()).then_some(text);
         }
         self.window.request_redraw();
@@ -2122,14 +2179,33 @@ impl TermWindow {
             Key::Named(NamedKey::Tab) => picker.move_selection(if self.modifiers.shift_key() { -1 } else { 1 }),
             Key::Named(NamedKey::PageUp) => picker.move_selection(-10),
             Key::Named(NamedKey::PageDown) => picker.move_selection(10),
-            Key::Named(NamedKey::Backspace) => picker.backspace(),
-            _ => {
-                if let Some(text) = event.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
-                    picker.type_text(text);
-                }
-            }
+            _ => picker.edit(&event.logical_key, event.text.as_deref(), self.modifiers),
         }
         None
+    }
+
+    /// The text field that has the keyboard, if any, following the order
+    /// keys are handed out in.
+    fn focused_field(&self) -> Option<&TextField> {
+        if let Some(open) = &self.dialog {
+            return open.input.as_ref();
+        }
+        if let Some(form) = &self.editor {
+            return form.focused_field();
+        }
+        if let Some(picker) = &self.palette {
+            return Some(&picker.query);
+        }
+        if self.menu.is_some() {
+            return None;
+        }
+        if let Some(rename) = &self.rename {
+            return Some(&rename.field);
+        }
+        if let Some(page) = self.settings_page() {
+            return page.picker.as_ref().map(|p| &p.filter).or(page.typing.as_ref());
+        }
+        self.search.as_ref().filter(|_| self.search_focused()).map(|s| &s.bar.query)
     }
 
     /// Feeds a key press to the title being edited.
@@ -2137,16 +2213,9 @@ impl TermWindow {
         match &event.logical_key {
             Key::Named(NamedKey::Enter) => return self.commit_rename(),
             Key::Named(NamedKey::Escape) => self.rename = None,
-            Key::Named(NamedKey::Backspace) => {
-                if let Some(rename) = &mut self.rename {
-                    rename.text.pop();
-                }
-            }
             _ => {
-                if let (Some(rename), Some(text)) = (&mut self.rename, &event.text)
-                    && !text.chars().any(char::is_control)
-                {
-                    rename.text.push_str(text);
+                if let Some(rename) = &mut self.rename {
+                    rename.field.key(&event.logical_key, event.text.as_deref(), self.modifiers);
                 }
             }
         }
@@ -2238,7 +2307,7 @@ impl TermWindow {
             animating = still_moving;
             let rename = self.rename.as_ref().map(|r| tabbar::RenameView {
                 tab: r.tab,
-                text: &r.text,
+                field: &r.field,
             });
             // The dragged tab, or else the one furthest from home, goes on top.
             let raised = self
@@ -2491,23 +2560,18 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     return;
                 }
+                // The clipboard keys belong to a text field while one has the keyboard.
+                if event.state == ElementState::Pressed && self.field_clipboard_key(&event) {
+                    return;
+                }
+                let Some(w) = &mut self.window else { return };
                 if let Some(open) = &mut w.dialog {
                     if event.state != ElementState::Pressed {
                         return;
                     }
-                    let mods = w.modifiers;
-                    let paste = mods.control_key()
-                        && matches!(KeyCombo::from_event(&event, mods), Some(KeyCombo { key, .. }) if key == "v");
-                    if paste {
-                        let text = self.get_clipboard(false);
-                        if let (Some(text), Some(open)) = (text, self.window.as_mut().and_then(|w| w.dialog.as_mut())) {
-                            open.paste(&text);
-                        }
-                    } else if let Some(answer) = open.key(&event.logical_key, event.text.as_deref(), mods.control_key()) {
+                    w.window.request_redraw();
+                    if let Some(answer) = open.key(&event.logical_key, event.text.as_deref(), w.modifiers) {
                         return self.dialog_answer(answer);
-                    }
-                    if let Some(w) = &self.window {
-                        w.window.request_redraw();
                     }
                     return;
                 }
@@ -2515,21 +2579,9 @@ impl ApplicationHandler<UserEvent> for App {
                     if event.state != ElementState::Pressed {
                         return;
                     }
-                    let mods = w.modifiers;
-                    let paste = mods.control_key()
-                        && matches!(KeyCombo::from_event(&event, mods), Some(KeyCombo { key, .. }) if key == "v");
-                    if paste {
-                        let text = self.get_clipboard(false);
-                        if let (Some(text), Some(form)) = (text, self.window.as_mut().and_then(|w| w.editor.as_mut())) {
-                            form.type_text(&text);
-                        }
-                    } else if let Some(outcome) =
-                        form.key(&event.logical_key, event.text.as_deref(), mods.control_key(), mods.shift_key())
-                    {
+                    w.window.request_redraw();
+                    if let Some(outcome) = form.key(&event.logical_key, event.text.as_deref(), w.modifiers) {
                         return self.editor_outcome(outcome);
-                    }
-                    if let Some(w) = &self.window {
-                        w.window.request_redraw();
                     }
                     return;
                 }
@@ -2555,7 +2607,15 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 let mods = w.modifiers;
+                // Caret keys stay in a text field, even when they're bound
+                // (ctrl+shift+left selects a word rather than switching tabs).
+                let field_key = w.focused_field().is_some()
+                    && matches!(
+                        event.logical_key,
+                        Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Home | NamedKey::End | NamedKey::Backspace | NamedKey::Delete)
+                    );
                 if event.state == ElementState::Pressed
+                    && !field_key
                     && let Some(action) = KeyCombo::from_event(&event, mods).and_then(|c| self.bindings.get(&c))
                 {
                     let action = *action;

@@ -9,10 +9,11 @@
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::{Flags, Rgb, Term};
 use regex::{Regex, RegexBuilder};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::layout::Rect;
 use crate::tabbar::{mix, truncate};
+use crate::textfield::{Edit, TextField};
 use crate::theme::Theme;
 
 /// A match: first and last character, as (absolute line, column).
@@ -72,7 +73,7 @@ pub fn find_all(term: &Term, pattern: &Regex) -> Vec<Match> {
 }
 
 pub struct Search {
-    pub query: String,
+    pub query: TextField,
     pub regex: bool,
     pub matches: Vec<Match>,
     /// The match shown, an index into `matches`.
@@ -114,7 +115,7 @@ impl Default for Search {
 impl Search {
     pub fn new() -> Self {
         Self {
-            query: String::new(),
+            query: TextField::default(),
             regex: false,
             matches: Vec::new(),
             current: None,
@@ -150,27 +151,21 @@ impl Search {
         Some(Request::Show)
     }
 
-    pub fn key(&mut self, key: &Key, text: Option<&str>, shift: bool, alt: bool) -> Option<Request> {
+    pub fn key(&mut self, key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<Request> {
         match key {
             Key::Named(NamedKey::Escape) => return Some(Request::Close),
             // Enter steps up (back in time), shift+Enter down.
-            Key::Named(NamedKey::Enter) => return self.step(!shift),
+            Key::Named(NamedKey::Enter) => return self.step(!mods.shift_key()),
             Key::Named(NamedKey::ArrowUp) => return self.step(true),
             Key::Named(NamedKey::ArrowDown) => return self.step(false),
             Key::Named(NamedKey::Tab) => return Some(Request::Unfocus),
-            Key::Named(NamedKey::Backspace) => {
-                self.query.pop();
-                return Some(Request::Search);
-            }
-            Key::Character(c) if alt && c.eq_ignore_ascii_case("r") => {
+            Key::Character(c) if mods.alt_key() && c.eq_ignore_ascii_case("r") => {
                 self.regex = !self.regex;
                 return Some(Request::Search);
             }
             _ => {}
         }
-        let text = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control))?;
-        self.query.push_str(text);
-        Some(Request::Search)
+        (self.query.key(key, text, mods)? == Edit::Changed).then_some(Request::Search)
     }
 
     pub fn click(&mut self, target: Target) -> Option<Request> {
@@ -225,6 +220,11 @@ pub fn layout(pane: Rect, m: CellMetrics, scale: f32) -> SearchLayout {
     }
     let input = Rect::new(bar.x + px(4.0), bar.y + px(4.0), x - bar.x - px(8.0), button);
     SearchLayout { bar, input, buttons }
+}
+
+/// Where the query's text starts, after the search icon.
+pub fn text_x(layout: &SearchLayout, m: CellMetrics, scale: f32) -> f32 {
+    layout.input.x + (6.0 * scale).round() + 2.0 * m.width
 }
 
 pub fn hit(layout: &SearchLayout, x: f32, y: f32) -> Option<Target> {
@@ -296,29 +296,18 @@ pub fn draw(search: &Search, layout: &SearchLayout, theme: &Theme, m: CellMetric
         color: muted,
         bold: false,
     });
-    let text_x = icon_x + 2.0 * m.width;
+    let text_x = text_x(layout, m, scale);
     let cols = (((input.x + input.width - text_x) / m.width) as usize).saturating_sub(status_cols + 2);
-    let (shown, color) = if search.query.is_empty() {
-        (truncate("Search", cols), mix(muted, panel, 0.3))
-    } else {
-        let chars: Vec<char> = search.query.chars().collect();
-        (chars[chars.len().saturating_sub(cols.saturating_sub(1))..].iter().collect(), fg)
-    };
-    let shown_cols = if search.query.is_empty() { 0 } else { text_columns(&shown) };
-    out.push(ChromeItem::Text {
-        text: shown,
-        x: text_x,
-        y,
-        color,
-        bold: false,
-    });
-    if search.focused {
-        out.push(ChromeItem::Rect {
-            rect: [text_x + shown_cols as f32 * m.width, y, px(2.0), m.height],
-            color: accent,
-            alpha: 1.0,
+    if search.query.is_empty() {
+        out.push(ChromeItem::Text {
+            text: truncate("Search", cols),
+            x: text_x,
+            y,
+            color: mix(muted, panel, 0.3),
+            bold: false,
         });
     }
+    search.query.draw(text_x, y, cols, fg, accent, search.focused, m, scale, out);
     out.push(ChromeItem::Text {
         text: status,
         x: input.x + input.width - (status_cols as f32 + 0.5) * m.width,

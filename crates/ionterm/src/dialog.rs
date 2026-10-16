@@ -4,10 +4,11 @@
 
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::layout::Rect;
 use crate::tabbar::{mix, readable_on, truncate};
+use crate::textfield::TextField;
 use crate::theme::Theme;
 
 #[derive(Clone, Debug)]
@@ -54,7 +55,7 @@ pub struct Dialog<P> {
     pub title: String,
     pub message: String,
     /// A text field, with what it holds.
-    pub input: Option<String>,
+    pub input: Option<TextField>,
     pub buttons: Vec<Button>,
     /// The button Enter picks.
     pub default: usize,
@@ -82,7 +83,7 @@ impl<P> Dialog<P> {
     }
 
     pub fn with_input(mut self, text: impl Into<String>) -> Self {
-        self.input = Some(text.into());
+        self.input = Some(TextField::new(text));
         self
     }
 
@@ -102,50 +103,38 @@ impl<P> Dialog<P> {
     fn answer(&self, button: Option<usize>) -> Answer {
         Answer {
             button,
-            text: self.input.clone().unwrap_or_default(),
+            text: self.input.as_ref().map(|i| i.text().to_string()).unwrap_or_default(),
             checked: self.checkbox.as_ref().is_some_and(|(_, c)| *c),
         }
     }
 
     /// Handles a key press; returns the answer once there is one.
-    pub fn key(&mut self, key: &Key, text: Option<&str>, ctrl: bool) -> Option<Answer> {
+    pub fn key(&mut self, key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<Answer> {
         match key {
             Key::Named(NamedKey::Escape) => return Some(self.answer(None)),
             Key::Named(NamedKey::Enter) => return Some(self.answer(Some(self.default))),
-            Key::Named(NamedKey::Backspace) => {
-                if let Some(input) = &mut self.input {
-                    if ctrl {
-                        // Delete the last word.
-                        let trimmed = input.trim_end_matches(|c: char| !c.is_alphanumeric()).len();
-                        let cut = input[..trimmed].rfind(|c: char| !c.is_alphanumeric()).map_or(0, |i| i + 1);
-                        input.truncate(cut);
-                    } else {
-                        input.pop();
-                    }
-                }
-            }
             Key::Named(NamedKey::Tab) | Key::Named(NamedKey::ArrowRight) if self.input.is_none() => {
                 self.default = (self.default + 1) % self.buttons.len();
             }
             Key::Named(NamedKey::ArrowLeft) if self.input.is_none() => {
                 self.default = (self.default + self.buttons.len() - 1) % self.buttons.len();
             }
-            _ => {
-                let text = text.filter(|t| !t.chars().any(char::is_control))?;
-                match &mut self.input {
-                    Some(input) if !ctrl => input.push_str(text),
-                    Some(_) => {}
-                    None => {
-                        let c = text.chars().next()?.to_ascii_lowercase();
-                        if let Some(checkbox) = self.checkbox.as_mut().filter(|_| c == 'a') {
-                            checkbox.1 = !checkbox.1;
-                            return None;
-                        }
-                        let index = self.buttons.iter().position(|b| b.key == Some(c))?;
-                        return Some(self.answer(Some(index)));
-                    }
+            _ => match &mut self.input {
+                Some(input) => {
+                    input.key(key, text, mods);
                 }
-            }
+                None if !mods.control_key() => {
+                    let text = text.filter(|t| !t.chars().any(char::is_control))?;
+                    let c = text.chars().next()?.to_ascii_lowercase();
+                    if let Some(checkbox) = self.checkbox.as_mut().filter(|_| c == 'a') {
+                        checkbox.1 = !checkbox.1;
+                        return None;
+                    }
+                    let index = self.buttons.iter().position(|b| b.key == Some(c))?;
+                    return Some(self.answer(Some(index)));
+                }
+                None => {}
+            },
         }
         None
     }
@@ -167,7 +156,15 @@ impl<P> Dialog<P> {
 
     pub fn paste(&mut self, text: &str) {
         if let Some(input) = &mut self.input {
-            input.push_str(text.lines().next().unwrap_or_default());
+            input.insert(text);
+        }
+    }
+
+    /// A click at `x` in the text field puts the caret there, or extends the
+    /// selection to it.
+    pub fn place_caret(&mut self, layout: &DialogLayout, x: f32, m: CellMetrics, scale: f32, extend: bool) {
+        if let (Some(input), Some(r)) = (&mut self.input, layout.input) {
+            input.click((x - text_x(r, scale)) / m.width, extend);
         }
     }
 }
@@ -286,6 +283,11 @@ pub fn hit(layout: &DialogLayout, x: f32, y: f32) -> Option<Option<Target>> {
     Some(None)
 }
 
+/// Where the text field's text starts.
+fn text_x(input: Rect, scale: f32) -> f32 {
+    input.x + (10.0 * scale).round()
+}
+
 pub fn draw<P>(dialog: &Dialog<P>, layout: &DialogLayout, theme: &Theme, m: CellMetrics, scale: f32, out: &mut Vec<ChromeItem>) {
     let bg = theme.background.0;
     let fg = theme.foreground.0;
@@ -331,17 +333,8 @@ pub fn draw<P>(dialog: &Dialog<P>, layout: &DialogLayout, theme: &Theme, m: Cell
             accent,
         ));
         out.push(rounded(r, small, mix(bg, fg, 0.03)));
-        let tx = r.x + (10.0 * scale).round();
         let cols = ((r.width - (20.0 * scale).round()) / m.width).max(1.0) as usize;
-        let chars: Vec<char> = value.chars().collect();
-        let shown: String = chars[chars.len().saturating_sub(cols.saturating_sub(1))..].iter().collect();
-        let shown_cols = text_columns(&shown);
-        out.push(text(shown, tx, center_y(r), fg, false));
-        out.push(ChromeItem::Rect {
-            rect: [tx + shown_cols as f32 * m.width, center_y(r), (2.0 * scale).round(), m.height],
-            color: accent,
-            alpha: 1.0,
-        });
+        value.draw(text_x(r, scale), center_y(r), cols, fg, accent, true, m, scale, out);
     }
 
     if let (Some(r), Some((label, checked))) = (layout.checkbox, &dialog.checkbox) {
@@ -402,20 +395,20 @@ mod tests {
             (),
         )
         .with_checkbox("Do this for all");
-        assert_eq!(dialog.key(&Key::Character("a".into()), Some("a"), false), None);
-        let answer = dialog.key(&Key::Character("r".into()), Some("r"), false).unwrap();
+        assert_eq!(dialog.key(&Key::Character("a".into()), Some("a"), ModifiersState::empty()), None);
+        let answer = dialog.key(&Key::Character("r".into()), Some("r"), ModifiersState::empty()).unwrap();
         assert_eq!((answer.button, answer.checked), (Some(1), true));
-        assert_eq!(dialog.key(&Key::Named(NamedKey::Escape), None, false).unwrap().button, None);
+        assert_eq!(dialog.key(&Key::Named(NamedKey::Escape), None, ModifiersState::empty()).unwrap().button, None);
     }
 
     #[test]
     fn input_takes_text() {
         let mut dialog = Dialog::new("New folder", "", vec![Button::new("Create", 'c')], ()).with_input("");
         for c in ["n", "e", "w"] {
-            assert!(dialog.key(&Key::Character(c.into()), Some(c), false).is_none());
+            assert!(dialog.key(&Key::Character(c.into()), Some(c), ModifiersState::empty()).is_none());
         }
-        dialog.key(&Key::Named(NamedKey::Backspace), None, false);
-        let answer = dialog.key(&Key::Named(NamedKey::Enter), None, false).unwrap();
+        dialog.key(&Key::Named(NamedKey::Backspace), None, ModifiersState::empty());
+        let answer = dialog.key(&Key::Named(NamedKey::Enter), None, ModifiersState::empty()).unwrap();
         assert_eq!((answer.button, answer.text.as_str()), (Some(0), "ne"));
     }
 

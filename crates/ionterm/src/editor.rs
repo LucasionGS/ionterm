@@ -2,12 +2,14 @@
 
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
 use ionterm_vt::Rgb;
+use winit::keyboard::ModifiersState;
 
 use crate::layout::Rect;
 use crate::menu::swatch_colors;
 use crate::ssh::store::HostForm;
 use crate::ssh::{HostExtras, SshHost};
 use crate::tabbar::{mix, readable_on, truncate};
+use crate::textfield::{Edit, TextField};
 use crate::theme::Theme;
 
 const LABELS: [&str; FIELDS] = ["Name", "Address", "User", "Port", "Key file", "Jump host", "Icon", "Group"];
@@ -47,7 +49,7 @@ pub enum Outcome {
 }
 
 pub struct Editor {
-    pub values: [String; FIELDS],
+    pub values: [TextField; FIELDS],
     pub color: Option<Rgb>,
     pub focus: Target,
     /// The alias being edited; `None` for a new connection.
@@ -89,7 +91,8 @@ impl Editor {
             form.proxy_jump,
             extras.and_then(|e| e.icon.clone()).unwrap_or_default(),
             extras.and_then(|e| e.group.clone()).unwrap_or_default(),
-        ];
+        ]
+        .map(TextField::new);
         editor.color = extras.and_then(|e| e.color).map(|c| c.0);
         editor.previous_alias = Some(host.alias.clone());
         editor.read_only_ssh = !managed;
@@ -107,7 +110,7 @@ impl Editor {
 
     /// The connection settings as entered.
     pub fn form(&self) -> Result<HostForm, String> {
-        let v = |i: usize| self.values[i].trim().to_string();
+        let v = |i: usize| self.values[i].text().trim().to_string();
         let port = match v(PORT).as_str() {
             "" => None,
             text => Some(
@@ -128,11 +131,11 @@ impl Editor {
     }
 
     pub fn icon(&self) -> String {
-        self.values[6].trim().chars().take(1).collect()
+        self.values[6].text().trim().chars().take(1).collect()
     }
 
     pub fn group(&self) -> String {
-        self.values[7].trim().to_string()
+        self.values[7].text().trim().to_string()
     }
 
     /// Tab order: editable fields, the colour row, then the buttons.
@@ -169,15 +172,23 @@ impl Editor {
         if let Target::Field(f) = self.focus
             && self.editable(f)
         {
-            // Pasted text may carry a newline; a field is one line.
-            self.values[f].push_str(text.lines().next().unwrap_or_default());
+            self.values[f].insert(text);
             self.error = None;
         }
     }
 
+    /// The focused field, if it can be typed in.
+    pub fn focused_field(&self) -> Option<&TextField> {
+        match self.focus {
+            Target::Field(f) if self.editable(f) => Some(&self.values[f]),
+            _ => None,
+        }
+    }
+
     /// Handles a key; returns what the form wants done, if anything.
-    pub fn key(&mut self, key: &winit::keyboard::Key, text: Option<&str>, ctrl: bool, shift: bool) -> Option<Outcome> {
+    pub fn key(&mut self, key: &winit::keyboard::Key, text: Option<&str>, mods: ModifiersState) -> Option<Outcome> {
         use winit::keyboard::{Key, NamedKey};
+        let (ctrl, shift) = (mods.control_key(), mods.shift_key());
         self.confirm_delete = false;
         match key {
             Key::Named(NamedKey::Escape) => return Some(Outcome::Cancel),
@@ -200,34 +211,24 @@ impl Editor {
             Key::Named(NamedKey::Tab) => self.move_focus(if shift { -1 } else { 1 }),
             Key::Named(NamedKey::ArrowDown) => self.move_focus(1),
             Key::Named(NamedKey::ArrowUp) => self.move_focus(-1),
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
-                if let Target::Swatch(i) = self.focus {
-                    let last = self.swatches.len();
-                    let next = if matches!(key, Key::Named(NamedKey::ArrowLeft)) {
-                        i.checked_sub(1).unwrap_or(last)
-                    } else if i >= last {
-                        0
-                    } else {
-                        i + 1
-                    };
-                    self.pick_swatch(next);
-                }
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if let Target::Field(f) = self.focus
-                    && self.editable(f)
-                {
-                    if ctrl {
-                        self.values[f].clear();
-                    } else {
-                        self.values[f].pop();
-                    }
-                    self.error = None;
-                }
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) if matches!(self.focus, Target::Swatch(_)) => {
+                let Target::Swatch(i) = self.focus else { return None };
+                let last = self.swatches.len();
+                let next = if matches!(key, Key::Named(NamedKey::ArrowLeft)) {
+                    i.checked_sub(1).unwrap_or(last)
+                } else if i >= last {
+                    0
+                } else {
+                    i + 1
+                };
+                self.pick_swatch(next);
             }
             _ => {
-                if let Some(text) = text.filter(|t| !t.chars().any(char::is_control)) {
-                    self.type_text(text);
+                if let Target::Field(f) = self.focus
+                    && self.editable(f)
+                    && self.values[f].key(key, text, mods) == Some(Edit::Changed)
+                {
+                    self.error = None;
                 }
             }
         }
@@ -237,6 +238,17 @@ impl Editor {
     pub fn pick_swatch(&mut self, index: usize) {
         self.color = self.swatches.get(index).copied();
         self.focus = Target::Swatch(index);
+    }
+
+    /// A click at `x` in the focused field puts the caret there, or extends
+    /// the selection to it.
+    pub fn place_caret(&mut self, layout: &EditorLayout, x: f32, m: CellMetrics, scale: f32, extend: bool) {
+        if let Target::Field(f) = self.focus
+            && self.editable(f)
+        {
+            let tx = text_x(layout.fields[f].1, scale);
+            self.values[f].click((x - tx) / m.width, extend);
+        }
     }
 
     /// Handles a click on a target; returns what the form wants done.
@@ -334,6 +346,11 @@ pub fn layout(editor: &Editor, m: CellMetrics, scale: f32, window: Rect) -> Edit
     }
 }
 
+/// Where a field's text starts.
+fn text_x(input: Rect, scale: f32) -> f32 {
+    input.x + (10.0 * scale).round()
+}
+
 /// What's under a point. `Some(None)` = inside the form but on nothing;
 /// `None` = outside it.
 pub fn hit(layout: &EditorLayout, x: f32, y: f32) -> Option<Option<Target>> {
@@ -397,32 +414,14 @@ pub fn draw(editor: &Editor, layout: &EditorLayout, theme: &Theme, m: CellMetric
         }
         out.push(rounded(*input, (6.0 * scale).round(), mix(bg, fg, if editable { 0.03 } else { 0.06 })));
         let value = &editor.values[f];
-        let tx = input.x + (10.0 * scale).round();
+        let tx = text_x(*input, scale);
         let cols = ((input.width - (20.0 * scale).round()) / m.width).max(1.0) as usize;
-        let shown = if value.is_empty() {
-            truncate(PLACEHOLDERS[f], cols)
-        } else if focused {
-            // While typing, keep the end visible.
-            let chars: Vec<char> = value.chars().collect();
-            chars[chars.len().saturating_sub(cols.saturating_sub(1))..].iter().collect()
-        } else {
-            truncate(value, cols)
-        };
-        let color = if value.is_empty() {
-            mix(muted, panel_bg, 0.3)
-        } else if editable {
-            fg
-        } else {
-            muted
-        };
-        let shown_cols = if value.is_empty() { 0 } else { text_columns(&shown) };
-        out.push(text(shown, tx, center_y(*input), color, false));
-        if focused {
-            out.push(ChromeItem::Rect {
-                rect: [tx + shown_cols as f32 * m.width, center_y(*input), (2.0 * scale).round(), m.height],
-                color: accent,
-                alpha: 1.0,
-            });
+        if value.is_empty() {
+            out.push(text(truncate(PLACEHOLDERS[f], cols), tx, center_y(*input), mix(muted, panel_bg, 0.3), false));
+        }
+        if focused || !value.is_empty() {
+            let color = if editable { fg } else { muted };
+            value.draw(tx, center_y(*input), cols, color, accent, focused, m, scale, out);
         }
     }
 
@@ -521,15 +520,15 @@ mod tests {
         let theme = Theme::default();
         let mut editor = Editor::new(&theme);
         for c in "box".chars() {
-            editor.key(&winit::keyboard::Key::Character(c.to_string().into()), Some(&c.to_string()), false, false);
+            editor.key(&winit::keyboard::Key::Character(c.to_string().into()), Some(&c.to_string()), ModifiersState::empty());
         }
-        editor.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab), None, false, false);
+        editor.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab), None, ModifiersState::empty());
         editor.type_text("10.0.0.2\n");
-        assert_eq!(editor.values[1], "10.0.0.2");
+        assert_eq!(editor.values[1].text(), "10.0.0.2");
         editor.focus = Target::Field(PORT);
         editor.type_text("abc");
         assert!(editor.form().is_err());
-        editor.values[PORT] = "2200".into();
+        editor.values[PORT].set("2200");
         assert_eq!(editor.form().unwrap().port, Some(2200));
 
         // Hosts from the user's config only expose ionterm's own fields.

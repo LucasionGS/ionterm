@@ -6,6 +6,7 @@ use ionterm_vt::Rgb;
 
 use crate::config::TabBarStyleConfig;
 use crate::layout::Rect;
+use crate::textfield::TextField;
 use crate::theme::Theme;
 
 /// What the tab bar shows for one tab.
@@ -116,7 +117,7 @@ pub struct BarLayout {
 /// The rename in progress, drawn in place of a tab's title.
 pub struct RenameView<'a> {
     pub tab: usize,
-    pub text: &'a str,
+    pub field: &'a TextField,
 }
 
 pub fn bar_height(style: TabBarStyleConfig, m: CellMetrics) -> f32 {
@@ -385,20 +386,7 @@ fn draw_tabs(
         });
         match &rename {
             Some(edit) if edit.tab == i => {
-                let shown = tail(edit.text, slot.text_cols.saturating_sub(1));
-                out.push(ChromeItem::Text {
-                    text: shown.clone(),
-                    x: slot.text_x,
-                    y: slot.text_y,
-                    color: fg,
-                    bold: false,
-                });
-                let caret_x = slot.text_x + text_columns(&shown) as f32 * m.width;
-                out.push(ChromeItem::Rect {
-                    rect: [caret_x, slot.text_y, (2.0 * scale).round(), m.height],
-                    color: theme.cursor.0,
-                    alpha: 1.0,
-                });
+                edit.field.draw(slot.text_x, slot.text_y, slot.text_cols, fg, theme.cursor.0, true, m, scale, out);
             }
             _ => out.push(ChromeItem::Text {
                 text: truncate(&tab.title, slot.text_cols),
@@ -572,10 +560,12 @@ fn draw_powerline(
             color: bg,
             alpha: 1.0,
         });
-        let label = match &rename {
-            Some(edit) if edit.tab == i => format!(" {} {} {}_ ", i + 1, tab.icon, edit.text),
-            _ => powerline_label(i, tab, max_title),
+        let editing = rename.as_ref().filter(|edit| edit.tab == i);
+        let label = match editing {
+            Some(_) => format!(" {} {} ", i + 1, tab.icon),
+            None => powerline_label(i, tab, max_title),
         };
+        let label_cols = text_columns(&label);
         out.push(ChromeItem::Text {
             text: label,
             x: r.x,
@@ -583,6 +573,11 @@ fn draw_powerline(
             color: fg,
             bold: tab.active,
         });
+        if let Some(edit) = editing {
+            let cols = ((r.width / m.width) as usize).saturating_sub(label_cols + 2);
+            let x = r.x + label_cols as f32 * m.width;
+            edit.field.draw(x, r.y, cols, fg, theme.cursor.0, true, m, scale, out);
+        }
         if let Some(progress) = tab.progress {
             draw_progress(progress, Rect::new(r.x, r.y, r.width - m.width, r.height + (2.0 * scale).round()), theme, scale, phase, out);
         }
@@ -652,22 +647,6 @@ pub fn truncate(text: &str, cols: usize) -> String {
     out
 }
 
-/// The end of a string that fits in `cols` columns (for text being typed).
-fn tail(text: &str, cols: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut start = chars.len();
-    let mut used = 0;
-    while start > 0 {
-        let w = text_columns(&chars[start - 1].to_string());
-        if used + w > cols {
-            break;
-        }
-        used += w;
-        start -= 1;
-    }
-    chars[start..].iter().collect()
-}
-
 pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let lerp = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Rgb::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b))
@@ -713,6 +692,5 @@ mod tests {
     fn truncates_titles() {
         assert_eq!(truncate("fish ~/development", 8), "fish ~/…");
         assert_eq!(truncate("fish", 8), "fish");
-        assert_eq!(tail("abcdef", 3), "def");
     }
 }
