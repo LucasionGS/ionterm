@@ -199,11 +199,12 @@ pub fn wait_for_master(connection: &Connection) -> bool {
     false
 }
 
-/// Adds a forward. A local port that's taken moves to the next free one,
-/// so the returned spec may listen elsewhere than asked.
+/// Adds a forward. A local port that's taken (or below 1024, which needs
+/// root) moves to a free one, so the returned spec may listen elsewhere
+/// than asked.
 pub fn start(connection: &Connection, mut spec: Spec) -> Result<Active, String> {
     if !spec.reverse {
-        spec.listen = free_local_port(spec.listen).ok_or("No free local port near that one.")?;
+        spec.listen = free_local_port(spec.listen).ok_or("No local port is free.")?;
     }
     let args = spec.ssh_args();
     match connection.control_argv("forward", &args) {
@@ -282,9 +283,37 @@ fn ssh_error(stderr: &[u8]) -> String {
     message
 }
 
-/// The first local port from `start` up that nothing listens on.
-pub fn free_local_port(start: u16) -> Option<u16> {
-    (start..=start.saturating_add(50)).find(|&port| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())
+/// A local port near `wanted` that this user can listen on: `wanted` or
+/// the next free one. Ports below 1024 need root, so without it they move
+/// up by 8000 (443 → 8443, 80 → 8080). Failing all that, any free port.
+pub fn free_local_port(wanted: u16) -> Option<u16> {
+    let can_bind = |port: u16| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok();
+    let near = |start: u16| (start..=start.saturating_add(50)).find(|&port| can_bind(port));
+    if can_bind(wanted) {
+        return Some(wanted);
+    }
+    let start = if wanted < 1024 { wanted + 8000 } else { wanted };
+    near(start).or_else(|| {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).ok()?;
+        Some(listener.local_addr().ok()?.port())
+    })
+}
+
+/// Whether this user may listen on a port (below 1024 needs root, unless
+/// the system lowered the limit).
+pub fn is_privileged(port: u16) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let start = std::fs::read_to_string("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(1024);
+        u32::from(port) < start && rustix::process::getuid().as_raw() != 0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cfg!(unix) && port < 1024
+    }
 }
 
 /// A port something listens on, on the server or here.
@@ -495,6 +524,20 @@ mod tests {
                     0: 0100007F:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 12345\n\
                     1: 0100007F:0BB9 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 12346\n";
         assert_eq!(parse_listening(proc), vec![Listening { port: 3000, addresses: vec!["127.0.0.1".into()], process: None }]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn privileged_ports_move_up() {
+        if rustix::process::getuid().as_raw() == 0 || !is_privileged(443) {
+            return;
+        }
+        let port = free_local_port(443).unwrap();
+        assert!(port >= 1024, "{port}");
+        // Taken ports move to the next free one.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let busy = taken.local_addr().unwrap().port();
+        assert_ne!(free_local_port(busy), Some(busy));
     }
 
     #[test]

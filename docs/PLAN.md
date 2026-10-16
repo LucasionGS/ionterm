@@ -248,7 +248,7 @@ Today every window is its own process with its own socket (`ionterm-<pid>.sock`)
 - [x] Specs: `3000`, `8080:80`, `8080:db.internal:5432`, `R 9000[:3000]` for the server listening
 - [x] Each pane owns its forwards (`Pane::forwards`) and cancels them when it closes (the master outlives the tab by `ControlPersist`); they move with the pane between windows
 - [x] Chips at the right of the tab bar (they show the bar even with one tab): forwards and the ports a local pane's processes listen on (`/proc/net/tcp*` inodes against the pane's process tree's fds, every 2 s for the visible tab). Click opens `http://localhost:<port>`, right/middle click stops a forward, hovering explains it
-- [x] A local port that's taken moves to the next free one, and the toast says so
+- [x] A local port that's taken moves to the next free one, and one below 1024 (root only) moves up by 8000 (443 → 8443); the toast says why
 - [x] Saved per host (`forwards = […]` in `hosts.toml`, "Port forwards" in the connection editor): set up once the master is up (`ssh -O check`, up to 2 minutes for a password), and again after a reconnect
 - [x] `ionterm @ forward SPEC` (waits, prints the local port), `unforward [R ]PORT`, `forwards`
 

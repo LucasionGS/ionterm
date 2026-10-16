@@ -168,7 +168,9 @@ impl App {
             Event::Started(asked, Ok(active)) => {
                 let moved = !asked.reverse && active.spec.listen != asked.listen;
                 let mut message = format!("Forwarding {}", active.spec.describe(&host));
-                if moved {
+                if moved && forward::is_privileged(asked.listen) {
+                    message.push_str(&format!(" (ports below 1024 need root here, so it's {})", active.spec.listen));
+                } else if moved {
                     message.push_str(&format!(" ({} was taken here)", asked.listen));
                 }
                 p.forwards.push(active);
