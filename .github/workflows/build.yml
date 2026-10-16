@@ -2,8 +2,7 @@ name: Build
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
+    branches: [master]
 
 jobs:
   build:
@@ -33,9 +32,8 @@ jobs:
           # Every push uploads a build; keep them briefly so they don't fill the account's storage.
           retention-days: 7
 
-  # The PKGBUILD's package, for `pacman -U`. Only for releases, since it compiles everything again.
+  # The PKGBUILD's package, for `pacman -U`.
   pacman:
-    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -69,10 +67,9 @@ jobs:
           path: pkg-out/*.pkg.tar.zst
           retention-days: 7
 
-  # Builds of master become a GitHub release, versioned like the PKGBUILD's pkgver().
+  # Every build becomes a GitHub release, versioned like the PKGBUILD's pkgver().
   release:
     needs: [build, pacman]
-    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
