@@ -79,6 +79,30 @@ impl Remote {
         }
     }
 
+    /// Runs a script with `input` on its stdin and returns its output, or a
+    /// readable error like `run`.
+    pub fn run_with_input(&self, script: &str, input: Vec<u8>) -> Result<Vec<u8>, String> {
+        use std::io::Write;
+
+        let mut command = self.command(script);
+        command.stdin(Stdio::piped());
+        let mut child = command.spawn().map_err(|error| format!("Could not run ssh: {error}"))?;
+        // Written from a thread, so a script that answers early can't block us.
+        let stdin = child.stdin.take();
+        let writer = std::thread::spawn(move || {
+            if let Some(mut stdin) = stdin {
+                let _ = stdin.write_all(&input);
+            }
+        });
+        let output = child.wait_with_output().map_err(|error| format!("Could not run ssh: {error}"))?;
+        let _ = writer.join();
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(error_message(&output.stderr, output.status.code()))
+        }
+    }
+
     /// Lists a directory (`None` = the home directory).
     pub fn list(&self, dir: Option<&str>) -> Result<Listing, String> {
         let output = self.run(&list_script(dir))?;

@@ -83,6 +83,7 @@ impl Button {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuItem {
     Open,
+    Edit,
     Download,
     Rename,
     Delete,
@@ -93,7 +94,8 @@ impl MenuItem {
     fn label(self) -> &'static str {
         match self {
             MenuItem::Open => "Open",
-            MenuItem::Download => "Download",
+            MenuItem::Edit => "Edit  ctrl+e",
+            MenuItem::Download => "Download  ctrl+d",
             MenuItem::Rename => "Rename…  F2",
             MenuItem::Delete => "Delete…  Del",
             MenuItem::CopyPath => "Copy path",
@@ -128,6 +130,8 @@ pub enum Request {
     /// List this folder (`None` = home).
     List(Option<String>),
     Download(Vec<Entry>),
+    /// Open a file in the local editor, saving it back to the server.
+    Edit(Entry),
     Upload { folders: bool },
     Rename(Entry),
     Delete(Vec<Entry>),
@@ -324,7 +328,8 @@ impl FilePanel {
         self.scroll = (self.scroll as isize + delta).clamp(0, max as isize) as usize;
     }
 
-    /// Opens a row: folders are entered, files downloaded.
+    /// Opens a row: folders are entered, text files edited, other files
+    /// downloaded.
     fn open_row(&mut self, position: usize) -> Option<Request> {
         let row = *self.rows().get(position)?;
         match row {
@@ -334,6 +339,8 @@ impl FilePanel {
                 if entry.is_dir() {
                     let path = self.full_path(&entry)?;
                     Some(self.navigate(Some(path)))
+                } else if crate::edit::looks_editable(&entry.name, entry.size, entry.is_executable()) {
+                    Some(Request::Edit(entry))
                 } else {
                     Some(Request::Download(vec![entry]))
                 }
@@ -392,6 +399,7 @@ impl FilePanel {
                 "n" => return Some(Request::NewFolder),
                 "u" => return Some(Request::Upload { folders: false }),
                 "d" => return self.selected_entry().map(|e| Request::Download(vec![e.clone()])),
+                "e" => return self.selected_entry().filter(|e| !e.is_dir()).map(|e| Request::Edit(e.clone())),
                 "h" => {
                     self.show_hidden = !self.show_hidden;
                     self.clamp_selection();
@@ -430,6 +438,7 @@ impl FilePanel {
                         let path = self.full_path(&entry)?;
                         Some(self.navigate(Some(path)))
                     }
+                    MenuItem::Edit => Some(Request::Edit(entry)),
                     MenuItem::Download => Some(Request::Download(vec![entry])),
                     MenuItem::Rename => Some(Request::Rename(entry)),
                     MenuItem::Delete => Some(Request::Delete(vec![entry])),
@@ -494,6 +503,8 @@ impl FilePanel {
         let mut items = Vec::with_capacity(5);
         if is_dir {
             items.push(MenuItem::Open);
+        } else {
+            items.push(MenuItem::Edit);
         }
         items.extend([MenuItem::Download, MenuItem::Rename, MenuItem::Delete, MenuItem::CopyPath]);
         items
@@ -1274,7 +1285,7 @@ mod tests {
         assert_eq!(p.reselect.as_deref(), Some("ion"));
         let mut p = panel();
         p.move_selection(2);
-        assert!(matches!(p.key(&Key::Named(NamedKey::Enter), None, false, false), Some(Request::Download(e)) if e[0].name == "notes.txt"));
+        assert!(matches!(p.key(&Key::Named(NamedKey::Enter), None, false, false), Some(Request::Edit(e)) if e.name == "notes.txt"));
     }
 
     #[test]

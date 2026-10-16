@@ -36,6 +36,8 @@ pub enum Purpose {
     Conflict(Conflicts),
     /// Multi-line text waiting to be pasted into a pane.
     Paste { pane: PaneId, text: String },
+    /// A question about a server file being edited locally.
+    Edit(u64, super::editing::Question),
 }
 
 /// Transfers whose destination name is taken, asked about one at a time.
@@ -357,6 +359,11 @@ impl App {
                     self.queue_downloads(pane, remote, &dir, entries);
                 }
             }
+            Request::Edit(entry) => {
+                if let Some(dir) = dir {
+                    self.start_edit(pane, remote, remote::join(&dir, &entry.name), None);
+                }
+            }
             Request::Upload { folders } => {
                 if let Some(dir) = dir {
                     files::pick(proxy, pane, dir, folders);
@@ -516,6 +523,7 @@ impl App {
                 self.download_path(pane, remote, &path, dir);
             }
             ionterm_vt::FileRequest::Put { dir } => files::pick(proxy, pane, dir, false),
+            ionterm_vt::FileRequest::Edit { path, nonce } => self.start_edit(pane, remote, path, Some(nonce)),
         }
     }
 
@@ -748,6 +756,7 @@ impl App {
         let Some(dialog) = w.dialog.take() else { return };
         let remote_of = |w: &mut TermWindow, pane: PaneId| w.panel_for(pane).map(|p| p.remote.clone());
         match dialog.purpose {
+            Purpose::Edit(id, question) => self.edit_answer(id, question, answer),
             Purpose::Delete { pane, paths } => {
                 if answer.button != Some(0) {
                     return;

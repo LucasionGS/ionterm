@@ -3,6 +3,7 @@
 
 mod background;
 mod drag;
+mod editing;
 mod files;
 mod hints;
 mod integration;
@@ -91,6 +92,8 @@ pub enum UserEvent {
     Zmodem(PaneId, zmodem::Event),
     /// A remote control command (`ionterm @ …`).
     Remote(crate::remote::Request),
+    /// Background work on a server file being edited locally.
+    Edit(u64, crate::edit::Event),
 }
 
 pub struct App {
@@ -111,6 +114,9 @@ pub struct App {
     last_focused: Option<WindowId>,
     /// A tab let go outside its window, waiting to see where it lands.
     tab_drop: Option<windows::TabDrop>,
+    /// Server files open in a local editor.
+    edits: Vec<editing::EditSession>,
+    next_edit_id: u64,
     /// Listens for file drops on Wayland, for every window; stopped before
     /// the display closes.
     drops: Option<dnd::Listener>,
@@ -256,6 +262,8 @@ impl App {
             next_window_serial: 0,
             last_focused: None,
             tab_drop: None,
+            edits: Vec::new(),
+            next_edit_id: 1,
             drops: None,
             clipboard: None,
             reload_at: None,
@@ -510,6 +518,11 @@ impl App {
     /// they ended badly; everything else closes.
     fn child_exited(&mut self, id: PaneId) {
         if self.settings_child_exited(id) {
+            return;
+        }
+        // An editor of a server file: write back what's left.
+        self.edit_pane_closed(id);
+        if !self.select_window_of_pane(id) {
             return;
         }
         let Some(w) = &mut self.window else { return };
@@ -2772,6 +2785,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Remote(request) => self.remote_request(request),
+            UserEvent::Edit(id, event) => self.edit_event(id, event),
         }
     }
 
@@ -2790,7 +2804,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.reload_config();
         }
         let session_wake = self.save_session(now, false);
-        let mut wake = [self.reload_at, session_wake, self.tab_drop_deadline()].into_iter().flatten().min();
+        let edit_wake = self.edit_timers(now);
+        let mut wake = [self.reload_at, session_wake, self.tab_drop_deadline(), edit_wake].into_iter().flatten().min();
         self.for_each_window(|app| {
             let next = app.window_timers(now);
             wake = [wake, next].into_iter().flatten().min();
@@ -2814,6 +2829,7 @@ impl ApplicationHandler<UserEvent> for App {
         // thread now, while the connection is still open.
         self.drops = None;
         scrollback::remove_files();
+        crate::edit::remove_local_dirs();
         crate::remote::remove_socket();
     }
 }

@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod dialog;
 mod dnd;
+mod edit;
 mod editor;
 mod hints;
 mod files;

@@ -103,8 +103,9 @@ pub enum TermEvent {
     Cwd(String),
     /// Mode 2026 ended, so a deferred frame can be drawn now.
     SyncEnd,
-    /// OSC 5379, ionterm's own: the remote shell's `ionterm-get` or
-    /// `ionterm-put` asks for a download or an upload.
+    /// OSC 5379, ionterm's own: the remote shell's `ionterm-get`,
+    /// `ionterm-put` or `ionterm-edit` asks for a download, an upload or
+    /// a file to edit.
     FileRequest(FileRequest),
     /// OSC 9;4 set or cleared the reported progress.
     Progress(Option<Progress>),
@@ -119,13 +120,17 @@ pub enum TermEvent {
     Notify { title: String, body: String },
 }
 
-/// What `ionterm-get` and `ionterm-put` ask for, with absolute remote paths.
+/// What `ionterm-get`, `ionterm-put` and `ionterm-edit` ask for, with
+/// absolute remote paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileRequest {
     /// Download this file (`dir` = it's a folder).
     Get { path: String, dir: bool },
     /// Choose local files and upload them into this folder.
     Put { dir: String },
+    /// Open this file in a local editor and write it back on every save.
+    /// `ionterm-edit` waits for a line starting with `nonce` once it's done.
+    Edit { path: String, nonce: String },
 }
 
 #[derive(Clone, Debug)]
@@ -1918,15 +1923,22 @@ impl Perform for Term {
             }
             "5379" => {
                 // OSC 5379 ; get | get-dir | put ; <base64 path>
+                // OSC 5379 ; edit ; <base64 path> ; <nonce>
                 let path = params.get(2).and_then(|p| base64::decode(p)).map(|b| String::from_utf8_lossy(&b).into_owned());
+                // The nonce comes back as typed input: letters and digits only.
+                let nonce = params
+                    .get(3)
+                    .filter(|n| !n.is_empty() && n.len() <= 64 && n.iter().all(u8::is_ascii_alphanumeric))
+                    .map(|n| String::from_utf8_lossy(n).into_owned());
                 let request = match (params.get(1).copied(), path) {
                     (Some(b"get"), Some(path)) => Some(FileRequest::Get { path, dir: false }),
                     (Some(b"get-dir"), Some(path)) => Some(FileRequest::Get { path, dir: true }),
                     (Some(b"put"), Some(dir)) => Some(FileRequest::Put { dir }),
+                    (Some(b"edit"), Some(path)) => nonce.map(|nonce| FileRequest::Edit { path, nonce }),
                     _ => None,
                 };
                 if let Some(request) = request.filter(|r| match r {
-                    FileRequest::Get { path, .. } => path.starts_with('/'),
+                    FileRequest::Get { path, .. } | FileRequest::Edit { path, .. } => path.starts_with('/'),
                     FileRequest::Put { dir } => dir.starts_with('/'),
                 }) {
                     self.events.push(TermEvent::FileRequest(request));
@@ -2581,6 +2593,9 @@ mod tests {
         // "/etc/hostname", "/srv/my dir", and a relative "etc".
         p.advance(&mut t, b"\x1b]5379;get;L2V0Yy9ob3N0bmFtZQ==\x07\x1b]5379;put;L3Nydi9teSBkaXI=\x1b\\");
         p.advance(&mut t, b"\x1b]5379;get-dir;ZXRj\x07\x1b]5379;run;L2Jpbg==\x07");
+        // Edits need a nonce of letters and digits.
+        p.advance(&mut t, b"\x1b]5379;edit;L2V0Yy9ob3N0bmFtZQ==;a1b2\x07\x1b]5379;edit;L2V0Yy9ob3N0bmFtZQ==;a b\x07");
+        p.advance(&mut t, b"\x1b]5379;edit;L2V0Yy9ob3N0bmFtZQ==\x07");
         assert_eq!(
             t.take_events(),
             vec![
@@ -2589,6 +2604,10 @@ mod tests {
                     dir: false
                 }),
                 TermEvent::FileRequest(FileRequest::Put { dir: "/srv/my dir".into() }),
+                TermEvent::FileRequest(FileRequest::Edit {
+                    path: "/etc/hostname".into(),
+                    nonce: "a1b2".into()
+                }),
             ]
         );
     }

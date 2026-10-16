@@ -27,6 +27,8 @@ pub struct TextField {
     anchor: usize,
     /// First column shown, kept by drawing so the caret stays in view.
     scroll: Cell<usize>,
+    /// A password: shown as dots, and never copied.
+    secret: bool,
 }
 
 /// What a field shows in a given width.
@@ -66,8 +68,25 @@ impl TextField {
         field
     }
 
+    /// A field for a password.
+    pub fn secret() -> Self {
+        Self {
+            secret: true,
+            ..Self::default()
+        }
+    }
+
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Columns a character takes as shown (a password's dots take one).
+    fn width_of(&self, c: char) -> usize {
+        if self.secret { 1 } else { c.width().unwrap_or(0) }
+    }
+
+    fn columns(&self, text: &str) -> usize {
+        if self.secret { text.chars().count() } else { text_columns(text) }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -87,7 +106,7 @@ impl TextField {
     }
 
     pub fn selected_text(&self) -> Option<&str> {
-        self.selection().map(|range| &self.text[range])
+        self.selection().filter(|_| !self.secret).map(|range| &self.text[range])
     }
 
     pub fn select_all(&mut self) {
@@ -224,8 +243,8 @@ impl TextField {
     /// The text that fits in `cols` columns, scrolled so the caret shows.
     pub fn view(&self, cols: usize) -> View {
         let cols = cols.max(1);
-        let caret = text_columns(&self.text[..self.cursor]);
-        let total = text_columns(&self.text);
+        let caret = self.columns(&self.text[..self.cursor]);
+        let total = self.columns(&self.text);
         // One column is kept for the caret after the last character.
         let mut scroll = self.scroll.get().min((total + 1).saturating_sub(cols));
         if caret < scroll {
@@ -239,10 +258,10 @@ impl TextField {
         let mut shown = String::new();
         let (mut col, mut first, mut selected) = (0, None, None::<(usize, usize)>);
         for (i, c) in self.text.char_indices() {
-            let width = c.width().unwrap_or(0);
+            let width = self.width_of(c);
             if col >= scroll && col + width <= scroll + cols {
                 let start = *first.get_or_insert(col);
-                shown.push(c);
+                shown.push(if self.secret { '•' } else { c });
                 if selection.as_ref().is_some_and(|r| r.contains(&i)) {
                     let at = col - start;
                     selected = Some(selected.map_or((at, at + width), |(s, _)| (s, at + width)));
@@ -265,7 +284,7 @@ impl TextField {
         let mut at = 0.0;
         let mut to = self.text.len();
         for (i, c) in self.text.char_indices() {
-            let width = c.width().unwrap_or(0) as f32;
+            let width = self.width_of(c) as f32;
             if target < at + width / 2.0 {
                 to = i;
                 break;

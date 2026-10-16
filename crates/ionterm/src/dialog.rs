@@ -87,6 +87,12 @@ impl<P> Dialog<P> {
         self
     }
 
+    /// A text field for a password: dots, never copied.
+    pub fn with_secret_input(mut self) -> Self {
+        self.input = Some(TextField::secret());
+        self
+    }
+
     pub fn with_checkbox(mut self, label: impl Into<String>) -> Self {
         self.checkbox = Some((label.into(), false));
         self

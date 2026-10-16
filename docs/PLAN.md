@@ -234,13 +234,13 @@ Today every window is its own process with its own socket (`ionterm-<pid>.sock`)
 
 **Edit remote files locally**
 
-- [ ] `ionterm-edit <file>…` on the server (another bootstrap function next to `ionterm-get`/`ionterm-put`, sent as OSC 5379 `edit`): download the file over the shared connection to a private temp folder, open it in the local editor (`[hints] open_file` / `$EDITOR` in a new tab or split), and upload it again every time it's saved (watched with `notify`)
-- [ ] "Edit" in the file panel (Enter or double-click on a text file, the right-click menu)
-- [ ] Root-owned files: write back through `sudo` (`sudo tee` over the connection, password asked in a dialog when needed, never stored)
-- [ ] Safety: before uploading, check the remote file's mtime and size still match the copy that was downloaded, and ask (Overwrite / Show diff / Cancel) when someone else changed it. Keep the owner and mode. A toast or the transfer card says "Saved to host:/path"
-- [ ] The temp copy is removed when the editor closes, the tab closes or ionterm exits
+- [x] `ionterm-edit <file>` on the server: a script (not a function, so it works as `$EDITOR` for `git commit`/`crontab -e`) that the bootstrap puts in a session temp folder on `PATH` (removed when the shell exits). It sends OSC 5379 `edit;<base64 path>;<nonce>` and waits, echo off, for ionterm to type back `<nonce> saved|unchanged|<error>`. Outside ionterm (tmux, another terminal) it runs `${IONTERM_EDIT_FALLBACK:-vi}`. ctrl+c stops waiting; ionterm then doesn't type the answer at the prompt (shell integration tells)
+- [x] ionterm (`edit.rs`, `app/editing.rs`) copies the file to a private folder in the runtime dir (0700/0600), opens it with `$VISUAL`/`$EDITOR` in a tab next to the SSH tab ("✎ host:name"), watches the folder and writes it back 200 ms after each save (skipped when the content didn't change). A graphical editor gets the file without waiting
+- [x] Writes go to a temp file on the server, are checked for length, then copied over the real file in place (`cat > file`), keeping owner, mode and hard links. A file changed on the server since (mtime and size) asks: Overwrite / Show changes (a `diff -u` tab) / Don't save
+- [x] Files the login user can't read or write: asks "Edit with sudo?", then for the password if sudo wants one (masked field; kept in memory only while the file is open, `sudo -S` with the password first on stdin)
+- [x] "Edit" in the file panel: Enter on files that look like text (small, not executable, no binary extension), ctrl+e and the row menu; ctrl+d still downloads
+- [x] The local copy goes when the editor quits or its tab is closed, and all of them when ionterm exits
 - Only for connections ionterm opened, like the other OSC 5379 commands
-- Open questions: editor inside ionterm (new tab or split) or an external editor (VS Code)? Wait for the editor (blocking, so `ionterm-edit` works as `$EDITOR` for `git commit`/`crontab -e` on the server) or return at once?
 
 **Port forwards from the tab**
 
