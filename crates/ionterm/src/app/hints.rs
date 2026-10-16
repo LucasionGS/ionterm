@@ -53,6 +53,11 @@ fn find_targets(term: &Term, rows: usize, exists: Option<&dyn Fn(&str) -> bool>)
     let mut targets = Vec::new();
     let mut row = 0;
     while row < rows {
+        // A folded output's summary line has nothing to pick.
+        if term.fold_at_row(row).is_some() {
+            row += 1;
+            continue;
+        }
         // A logical line: rows joined where they soft-wrapped.
         let mut chars: Vec<(char, usize, usize, u32)> = Vec::new();
         while let Some(line) = term.line(term.viewport_to_absolute(row)) {

@@ -12,9 +12,12 @@ if [[ -z $__ionterm_integrated ]]; then
     printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$status" "$__ionterm_host" "$PWD"
     return "$status"
   }
-  # Runs last, right before the prompt is drawn: it starts here.
+  # Runs last, right before the prompt is drawn: it starts here. The end
+  # of PS1 marks where the command line starts (prompt themes that set PS1
+  # every time get it back each time).
   __ionterm_prompt_end() {
     local status=$?
+    [[ $PS1 == *'133;B'* ]] || PS1="$PS1"'\[\e]133;B\a\]'
     printf '\e]133;A\a'
     return "$status"
   }

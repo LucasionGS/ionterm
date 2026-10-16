@@ -27,6 +27,35 @@ const MAX_HYPERLINKS: usize = 65_536;
 /// The kitty keyboard spec caps the flag stack; the oldest entry is evicted.
 const MAX_KEYBOARD_STACK: usize = 16;
 const TAB_WIDTH: usize = 8;
+/// Lines of a folded output still shown above and below its summary line.
+const FOLD_KEEP: usize = 3;
+
+/// A folded command output, in absolute lines: the prompt it ran from and
+/// its output's first and last line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Fold {
+    prompt: usize,
+    start: usize,
+    end: usize,
+}
+
+/// What folding or unfolding a command's output did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldChange {
+    /// Folded, hiding this many lines.
+    Folded(usize),
+    Unfolded,
+    /// Not a finished command with enough output to fold.
+    Unfoldable,
+}
+
+/// What a line of the (folded) view shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    Line(usize),
+    /// The line standing in for a folded range, which starts at `first`.
+    Summary { first: usize, hidden: usize },
+}
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,8 +319,11 @@ pub struct Term {
     other_grid: Vec<Row>,
     scrollback: VecDeque<Row>,
     scrollback_limit: usize,
-    /// How many lines the view is scrolled back into the scrollback.
+    /// How many lines the view is scrolled back into the scrollback, as
+    /// shown (a folded range counts as one line).
     display_offset: usize,
+    /// Folded command outputs, oldest first.
+    folds: Vec<Fold>,
     cursor: Cursor,
     saved_primary: Option<SavedCursor>,
     saved_alternate: Option<SavedCursor>,
@@ -321,6 +353,9 @@ pub struct Term {
     /// When the running command started (OSC 133;C), until it finishes
     /// (133;D).
     command_started: Option<Instant>,
+    /// Where typing starts on the command line (OSC 133;B), as a screen row
+    /// and column.
+    input_start: Option<(usize, usize)>,
     /// The row a carriage return went back to, while it's rewritten in
     /// place (how curl or pacman draw progress); a line feed ends that.
     rewritten_row: Option<usize>,
@@ -355,6 +390,7 @@ impl Term {
             scrollback: VecDeque::new(),
             scrollback_limit,
             display_offset: 0,
+            folds: Vec::new(),
             cursor: Cursor {
                 row: 0,
                 col: 0,
@@ -379,6 +415,7 @@ impl Term {
             editing: false,
             click_events: false,
             command_started: None,
+            input_start: None,
             rewritten_row: None,
             progress: None,
             graphics: Graphics::default(),
@@ -460,9 +497,29 @@ impl Term {
         self.scrollback.len()
     }
 
-    /// The absolute line shown at viewport row `row`.
+    /// The absolute line shown at viewport row `row`. A folded output's
+    /// summary line gives the first line it hides.
     pub fn viewport_to_absolute(&self, row: usize) -> usize {
-        self.scrollback.len() - self.display_offset + row
+        if self.folds.is_empty() {
+            return self.scrollback.len() - self.display_offset + row;
+        }
+        let ranges = self.hidden_ranges();
+        let top = shown_history(self.scrollback.len(), &ranges).saturating_sub(self.display_offset);
+        match shown_at(&ranges, top + row) {
+            Shown::Line(line) => line,
+            Shown::Summary { first, .. } => first,
+        }
+    }
+
+    /// The viewport row an absolute line is shown on (negative above the
+    /// view); a folded line gives its summary's row.
+    pub fn absolute_to_viewport(&self, absolute: usize) -> isize {
+        if self.folds.is_empty() {
+            return absolute as isize - (self.scrollback.len() - self.display_offset) as isize;
+        }
+        let ranges = self.hidden_ranges();
+        let top = shown_history(self.scrollback.len(), &ranges).saturating_sub(self.display_offset);
+        shown_index(&ranges, absolute) as isize - top as isize
     }
 
     /// A line by absolute index (scrollback first, then the screen).
@@ -550,7 +607,7 @@ impl Term {
 
     /// Scrolls the view by `delta` lines; positive scrolls back into history.
     pub fn scroll_display(&mut self, delta: isize) {
-        let max = self.scrollback.len() as isize;
+        let max = self.max_display_offset() as isize;
         let next = (self.display_offset as isize + delta).clamp(0, max) as usize;
         if next != self.display_offset {
             self.display_offset = next;
@@ -566,9 +623,190 @@ impl Term {
 
     /// Scrolls so an absolute line is at the top (or as near as it gets).
     pub fn scroll_to_line(&mut self, absolute: usize) {
-        let offset = self.scrollback.len().saturating_sub(absolute);
+        let ranges = self.hidden_ranges();
+        let offset = shown_history(self.scrollback.len(), &ranges).saturating_sub(shown_index(&ranges, absolute));
         self.scroll_display(offset as isize - self.display_offset as isize);
     }
+
+    //#region Folding
+
+    /// How far back the view can scroll: the scrollback as shown.
+    fn max_display_offset(&self) -> usize {
+        if self.folds.is_empty() {
+            return self.scrollback.len();
+        }
+        shown_history(self.scrollback.len(), &self.hidden_ranges())
+    }
+
+    /// The lines folds hide, oldest first. Only scrollback lines are hidden
+    /// (the screen is never folded), and only two or more at a time, so the
+    /// summary line saves room.
+    fn hidden_ranges(&self) -> Vec<(usize, usize)> {
+        let history = self.scrollback.len();
+        self.folds
+            .iter()
+            .filter(|f| self.line(f.prompt).is_some_and(|r| r.prompt && r.folded))
+            .filter_map(|f| {
+                let first = f.start + FOLD_KEEP;
+                let last = f.end.checked_sub(FOLD_KEEP)?.min(history.checked_sub(1)?);
+                (last > first).then_some((first, last))
+            })
+            .collect()
+    }
+
+    /// Folds the output of the command around an absolute line down to its
+    /// first and last few lines, or unfolds it. Only finished commands with
+    /// enough output fold. The view stays on the same line.
+    pub fn toggle_fold(&mut self, absolute: usize) -> FoldChange {
+        let total = self.total_lines();
+        let is_prompt = |term: &Self, i: usize| term.line(i).is_some_and(|r| r.prompt);
+        let Some(prompt) = (0..=absolute.min(total.saturating_sub(1))).rev().find(|&i| is_prompt(self, i)) else {
+            return FoldChange::Unfoldable;
+        };
+        let top = (self.display_offset > 0).then(|| self.viewport_to_absolute(0));
+        let change = if let Some(index) = self.folds.iter().position(|f| f.prompt == prompt) {
+            self.folds.remove(index);
+            if let Some(row) = self.line_mut(prompt) {
+                row.folded = false;
+            }
+            FoldChange::Unfolded
+        } else {
+            let finished = (prompt + 1..total).any(|i| is_prompt(self, i));
+            let Some((start, end)) = self.command_output_at(prompt).filter(|_| finished) else {
+                return FoldChange::Unfoldable;
+            };
+            let lines = end - start + 1;
+            if lines <= 2 * FOLD_KEEP + 1 {
+                return FoldChange::Unfoldable;
+            }
+            if let Some(row) = self.line_mut(prompt) {
+                row.folded = true;
+            }
+            let at = self.folds.partition_point(|f| f.prompt < prompt);
+            self.folds.insert(at, Fold { prompt, start, end });
+            FoldChange::Folded(lines - 2 * FOLD_KEEP)
+        };
+        match top {
+            Some(top) => self.scroll_to_line(top),
+            None => self.display_offset = 0,
+        }
+        self.display_offset = self.display_offset.min(self.max_display_offset());
+        self.dirty = true;
+        change
+    }
+
+    /// The folded output whose summary is on a viewport row: its prompt's
+    /// absolute line and how many lines it hides.
+    pub fn fold_at_row(&self, row: usize) -> Option<(usize, usize)> {
+        if self.folds.is_empty() {
+            return None;
+        }
+        let ranges = self.hidden_ranges();
+        let top = shown_history(self.scrollback.len(), &ranges).saturating_sub(self.display_offset);
+        let Shown::Summary { first, hidden } = shown_at(&ranges, top + row) else { return None };
+        let fold = self.folds.iter().find(|f| f.start + FOLD_KEEP == first)?;
+        Some((fold.prompt, hidden))
+    }
+
+    /// The command line as typed: from where the prompt ended (133;B) to
+    /// the end of the row before `output_row`.
+    fn typed_command(&self, output_row: usize) -> Option<String> {
+        let (row, col) = self.input_start?;
+        let history = self.scrollback.len();
+        let last = output_row.checked_sub(1).filter(|&last| last >= row)?;
+        Some(self.text_between((history + row, col), (history + last, self.cols - 1)))
+    }
+
+    /// The command line run from the prompt at an absolute line, when the
+    /// shell said or it was typed after a marked prompt end.
+    pub fn command_of(&self, prompt: usize) -> Option<&str> {
+        self.line(prompt)?.command.as_deref()
+    }
+
+    /// Unfolds whatever fold hides an absolute line (a search found it
+    /// there). Returns whether one did.
+    pub fn reveal(&mut self, absolute: usize) -> bool {
+        let hiding = self.hidden_ranges().iter().any(|&(first, last)| (first..=last).contains(&absolute));
+        let Some(prompt) = self.folds.iter().find(|f| (f.start..=f.end).contains(&absolute)).map(|f| f.prompt).filter(|_| hiding) else {
+            return false;
+        };
+        self.toggle_fold(prompt);
+        true
+    }
+
+    /// For a scrollbar: every line as shown (folds count once), and the
+    /// shown index of the top of the view.
+    pub fn scroll_extent(&self) -> (usize, usize) {
+        let history = self.max_display_offset();
+        (history + self.rows, history - self.display_offset.min(history))
+    }
+
+    /// Where an absolute line is among all shown lines (a folded one gives
+    /// its summary's place).
+    pub fn shown_position(&self, absolute: usize) -> usize {
+        if self.folds.is_empty() {
+            return absolute;
+        }
+        shown_index(&self.hidden_ranges(), absolute)
+    }
+
+    /// Scrolls so the shown line `index` is at the top.
+    pub fn scroll_to_shown(&mut self, index: usize) {
+        let history = self.max_display_offset();
+        let offset = history.saturating_sub(index);
+        self.scroll_display(offset as isize - self.display_offset as isize);
+    }
+
+    /// Whether the command run from a prompt line has its output folded.
+    pub fn is_folded(&self, prompt: usize) -> bool {
+        self.folds.iter().any(|f| f.prompt == prompt)
+    }
+
+    /// Finds the folds again from the rows' marks, after a reflow moved
+    /// every line.
+    fn rebuild_folds(&mut self) {
+        let total = self.total_lines();
+        let prompts: Vec<usize> = (0..total).filter(|&i| self.line(i).is_some_and(|r| r.prompt)).collect();
+        let mut folds = Vec::new();
+        for (n, &prompt) in prompts.iter().enumerate() {
+            if !self.line(prompt).is_some_and(|r| r.folded) {
+                continue;
+            }
+            let output = self.command_output_at(prompt).filter(|_| n + 1 < prompts.len());
+            match output {
+                Some((start, end)) if end - start + 1 > 2 * FOLD_KEEP + 1 => folds.push(Fold { prompt, start, end }),
+                _ => {
+                    if let Some(row) = self.line_mut(prompt) {
+                        row.folded = false;
+                    }
+                }
+            }
+        }
+        self.folds = folds;
+    }
+
+    fn line_mut(&mut self, absolute: usize) -> Option<&mut Row> {
+        let history = self.scrollback.len();
+        if absolute < history {
+            self.scrollback.get_mut(absolute)
+        } else {
+            self.grid.get_mut(absolute - history)
+        }
+    }
+
+    /// The line standing in for `hidden` folded lines.
+    fn summary_row(&self, hidden: usize) -> Row {
+        let mut row = Row::new(self.cols, Color::Default);
+        let text = format!("  ⋯ {} lines folded", thousands(hidden));
+        for (cell, c) in row.cells.iter_mut().zip(text.chars()) {
+            cell.c = c;
+            cell.fg = Color::Indexed(8);
+            cell.flags = Flags::ITALIC;
+        }
+        row
+    }
+
+    //#endregion
 
     /// Absolute lines where a shell prompt starts (OSC 133;A), oldest first.
     pub fn prompt_lines(&self) -> Vec<usize> {
@@ -623,6 +861,7 @@ impl Term {
     pub fn clear_history(&mut self) {
         self.scrollback.clear();
         self.display_offset = 0;
+        self.folds.clear();
         self.dirty = true;
         if self.mode.contains(TermMode::ALT_SCREEN) {
             return;
@@ -771,7 +1010,7 @@ impl Term {
         self.scroll_bottom = rows - 1;
         self.tabs = default_tabs(cols);
         self.trim_scrollback();
-        self.display_offset = self.display_offset.min(self.scrollback.len());
+        self.display_offset = self.display_offset.min(self.max_display_offset());
         self.dirty = true;
     }
 
@@ -841,6 +1080,9 @@ impl Term {
             self.cursor.row = row;
             self.cursor.col = col;
         }
+        if !self.folds.is_empty() {
+            self.rebuild_folds();
+        }
     }
 
     /// The alternate screen isn't reflowed: full-screen apps redraw on resize.
@@ -862,12 +1104,23 @@ impl Term {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let offset = self.display_offset.min(self.scrollback.len());
-        let from_history = offset.min(self.rows);
+        let offset = self.display_offset.min(self.max_display_offset());
         let mut lines = Vec::with_capacity(self.rows);
-        let start = self.scrollback.len() - offset;
-        lines.extend(self.scrollback.range(start..start + from_history).cloned());
-        lines.extend(self.grid[..self.rows - from_history].iter().cloned());
+        if self.folds.is_empty() {
+            let from_history = offset.min(self.rows);
+            let start = self.scrollback.len() - offset;
+            lines.extend(self.scrollback.range(start..start + from_history).cloned());
+            lines.extend(self.grid[..self.rows - from_history].iter().cloned());
+        } else {
+            let ranges = self.hidden_ranges();
+            let top = shown_history(self.scrollback.len(), &ranges) - offset;
+            for row in 0..self.rows {
+                lines.push(match shown_at(&ranges, top + row) {
+                    Shown::Line(line) => self.line(line).cloned().unwrap_or_else(|| Row::new(self.cols, Color::Default)),
+                    Shown::Summary { hidden, .. } => self.summary_row(hidden),
+                });
+            }
+        }
 
         let cursor = (offset == 0 && self.mode.contains(TermMode::SHOW_CURSOR)).then(|| {
             let cell = &self.grid[self.cursor.row].cells[self.cursor.col];
@@ -879,7 +1132,7 @@ impl Term {
             }
         });
 
-        let (images, virtual_images) = self.visible_images(offset);
+        let (images, virtual_images) = self.visible_images();
         Snapshot {
             cols: self.cols,
             rows: self.rows,
@@ -918,10 +1171,24 @@ impl Term {
     }
 
     fn trim_scrollback(&mut self) {
+        let mut dropped = 0;
         while self.scrollback.len() > self.scrollback_limit {
             if let Some(row) = self.scrollback.pop_front() {
                 self.forget_anchors(&row);
+                dropped += 1;
             }
+        }
+        // Folds move up with their lines, and go with their prompt.
+        if dropped > 0 && !self.folds.is_empty() {
+            self.folds.retain_mut(|f| {
+                if f.prompt < dropped {
+                    return false;
+                }
+                f.prompt -= dropped;
+                f.start -= dropped;
+                f.end -= dropped;
+                true
+            });
         }
     }
 
@@ -952,7 +1219,7 @@ impl Term {
         }
         if save {
             self.trim_scrollback();
-            self.display_offset = self.display_offset.min(self.scrollback.len());
+            self.display_offset = self.display_offset.min(self.max_display_offset());
         }
         self.dirty = true;
     }
@@ -1597,18 +1864,24 @@ impl Term {
     }
 
     /// Placements reaching into the viewport, and virtual placements.
-    fn visible_images(&self, offset: usize) -> (Vec<ImageDraw>, Vec<(Image, Placement)>) {
+    fn visible_images(&self) -> (Vec<ImageDraw>, Vec<(Image, Placement)>) {
         if self.graphics.is_empty() {
             return (Vec::new(), Vec::new());
         }
-        let top = self.scrollback.len() - offset;
+        let top = self.viewport_to_absolute(0);
+        let bottom = self.viewport_to_absolute(self.rows - 1);
+        let ranges = self.hidden_ranges();
         let mut images = Vec::new();
-        for line in top.saturating_sub(self.graphics.max_rows)..top + self.rows {
+        for line in top.saturating_sub(self.graphics.max_rows)..=bottom {
             let Some(row) = self.line(line) else { break };
+            // Images on folded lines are folded away with them.
+            if ranges.iter().any(|&(first, last)| (first..=last).contains(&line)) {
+                continue;
+            }
             for anchor in &row.anchors {
                 let Some(p) = self.graphics.placement(anchor.placement) else { continue };
                 let Some(image) = self.graphics.image(p.image_id) else { continue };
-                let viewport_row = line as isize - top as isize;
+                let viewport_row = self.absolute_to_viewport(line);
                 if viewport_row + p.rows as isize > 0 {
                     images.push(ImageDraw {
                         image: image.clone(),
@@ -1847,10 +2120,13 @@ impl Perform for Term {
                     self.editing = true;
                     self.click_events = params[2..].iter().any(|p| *p == b"click_events=1");
                     self.command_started = None;
+                    self.input_start = None;
                     let row = self.cursor.row;
                     self.grid[row].prompt = true;
                     self.events.push(TermEvent::Prompt);
                 }
+                // The prompt ends and the command line starts.
+                Some(Some(b'B')) => self.input_start = Some((self.cursor.row, self.cursor.col)),
                 // Command started: its output begins here.
                 Some(Some(b'C')) => {
                     self.at_prompt = false;
@@ -1858,7 +2134,13 @@ impl Perform for Term {
                     self.command_started = Some(Instant::now());
                     let row = self.cursor.row;
                     self.grid[row].output = true;
-                    self.events.push(TermEvent::CommandStarted(command_line(&params[2..])));
+                    // The command, from the shell or as typed after the prompt.
+                    let command = command_line(&params[2..]).or_else(|| self.typed_command(row));
+                    let command = command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+                    if let Some(prompt) = (0..=row).rev().find(|&r| self.grid[r].prompt) {
+                        self.grid[prompt].command = command.as_deref().map(Box::from);
+                    }
+                    self.events.push(TermEvent::CommandStarted(command));
                 }
                 // Command finished, with its exit status.
                 Some(Some(b'D')) => {
@@ -2293,6 +2575,55 @@ impl Perform for Term {
     }
 }
 
+/// The scrollback's length as shown: each folded range is one line.
+fn shown_history(history: usize, ranges: &[(usize, usize)]) -> usize {
+    history - ranges.iter().map(|(first, last)| last - first).sum::<usize>()
+}
+
+/// What shown line `index` (of the folded history, then the screen) is.
+fn shown_at(ranges: &[(usize, usize)], index: usize) -> Shown {
+    let mut shift = 0;
+    for &(first, last) in ranges {
+        let summary = first - shift;
+        if index < summary {
+            break;
+        }
+        if index == summary {
+            return Shown::Summary { first, hidden: last - first + 1 };
+        }
+        shift += last - first;
+    }
+    Shown::Line(index + shift)
+}
+
+/// Where an absolute line is shown; a hidden one gives its summary.
+fn shown_index(ranges: &[(usize, usize)], absolute: usize) -> usize {
+    let mut shift = 0;
+    for &(first, last) in ranges {
+        if absolute < first {
+            break;
+        }
+        if absolute <= last {
+            return first - shift;
+        }
+        shift += last - first;
+    }
+    absolute - shift
+}
+
+/// `4812` as `4,812`.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn blank_grid(cols: usize, rows: usize) -> Vec<Row> {
     vec![Row::new(cols, Color::Default); rows]
 }
@@ -2507,6 +2838,102 @@ mod tests {
         p.advance(&mut t, b"sleep\r\n\x1b]133;C\x07zzz");
         assert!(!t.click_goes_to_shell(4));
         assert_eq!(t.last_command_output(), Some((5, 5)));
+    }
+
+    /// `seq 1 30` as a marked command, then a prompt, on a 20×5 terminal:
+    /// the output scrolls into the scrollback.
+    fn long_output(t: &mut Term, p: &mut Processor) {
+        p.advance(t, b"\x1b]133;A\x07$ \x1b]133;B\x07seq\r\n\x1b]133;C\x07");
+        for n in 1..=30 {
+            p.advance(t, format!("{n}\r\n").as_bytes());
+        }
+        p.advance(t, b"\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+    }
+
+    fn shown(t: &Term) -> Vec<String> {
+        t.snapshot()
+            .lines
+            .iter()
+            .map(|r| r.cells.iter().map(|c| c.c).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn folds_long_output() {
+        let (mut t, mut p) = term(20, 5);
+        long_output(&mut t, &mut p);
+        // Lines: 0 = the prompt, 1..=30 the output, 31 the next prompt.
+        assert_eq!(t.history_len(), 27);
+        assert_eq!(t.toggle_fold(10), FoldChange::Folded(24));
+        assert!(t.is_folded(0));
+        // Only scrollback lines fold: 4..=26 become one line.
+        t.scroll_display(isize::MAX / 2);
+        assert_eq!(shown(&t), ["$ seq", "1", "2", "3", "  ⋯ 23 lines folded"]);
+        assert_eq!(t.fold_at_row(4), Some((0, 23)));
+        assert_eq!(t.viewport_to_absolute(4), 4);
+        t.scroll_display(-1);
+        assert_eq!(shown(&t)[4], "27");
+        assert_eq!(t.viewport_to_absolute(4), 27);
+        assert_eq!(t.absolute_to_viewport(27), 4);
+        assert_eq!(t.absolute_to_viewport(15), 3);
+        // Copying still sees everything.
+        assert_eq!(t.text_between((10, 0), (11, 19)), "10\n11");
+        // At the bottom the screen is untouched.
+        t.scroll_to_bottom();
+        assert_eq!(shown(&t), ["27", "28", "29", "30", "$"]);
+        // Unfolding brings it all back.
+        assert_eq!(t.toggle_fold(0), FoldChange::Unfolded);
+        t.scroll_display(isize::MAX / 2);
+        assert_eq!(shown(&t)[4], "4");
+    }
+
+    #[test]
+    fn only_finished_long_outputs_fold() {
+        let (mut t, mut p) = term(20, 10);
+        session(&mut t, &mut p);
+        // Two lines of output aren't worth folding.
+        assert_eq!(t.toggle_fold(1), FoldChange::Unfoldable);
+        let (mut t, mut p) = term(20, 5);
+        p.advance(&mut t, b"\x1b]133;A\x07$ \x1b]133;B\x07yes\r\n\x1b]133;C\x07");
+        for _ in 0..30 {
+            p.advance(&mut t, b"y\r\n");
+        }
+        // Still running: nothing to fold yet.
+        assert_eq!(t.toggle_fold(3), FoldChange::Unfoldable);
+    }
+
+    #[test]
+    fn folds_survive_reflow_and_scrollback_trimming() {
+        let (mut t, mut p) = term(20, 5);
+        long_output(&mut t, &mut p);
+        t.toggle_fold(0);
+        t.resize(10, 5);
+        assert!(t.is_folded(0));
+        t.scroll_display(isize::MAX / 2);
+        assert_eq!(shown(&t)[4], "  ⋯ 23 lin");
+        // A tiny scrollback drops the prompt: the fold goes with it.
+        t.set_scrollback_limit(10);
+        for n in 0..20 {
+            p.advance(&mut t, format!("more {n}\r\n").as_bytes());
+        }
+        assert!(t.folds.is_empty());
+        assert!(!shown(&t).iter().any(|l| l.contains('⋯')));
+    }
+
+    #[test]
+    fn remembers_command_lines() {
+        let (mut t, mut p) = term(30, 10);
+        // bash: the prompt ends with 133;B, the command is what follows.
+        p.advance(&mut t, b"\x1b]133;A\x07[me@box ~]$ \x1b]133;B\x07cargo build\r\n\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07");
+        assert_eq!(t.command_of(0), Some("cargo build"));
+        // zsh and fish say it themselves.
+        p.advance(&mut t, b"\x1b]133;A\x07$ ls -la\r\n\x1b]133;C;cmdline=ls -la\x07x\r\n\x1b]133;D;0\x07");
+        assert_eq!(t.command_of(2), Some("ls -la"));
+        // Without either, the prompt can't be told from the command.
+        p.advance(&mut t, b"\x1b]133;A\x07$ pwd\r\n\x1b]133;C\x07/\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        assert_eq!(t.command_of(4), None);
+        t.resize(12, 10);
+        assert_eq!(t.prompt_lines().first().and_then(|&p| t.command_of(p)), Some("cargo build"));
     }
 
     #[test]

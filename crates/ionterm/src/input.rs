@@ -573,6 +573,17 @@ pub enum Action {
     NextPrompt,
     /// Copies the last command's output to the clipboard.
     CopyLastOutput,
+    // Command blocks: the block at the top of the view when scrolled back,
+    // else the last command.
+    CopyCommand,
+    CopyCommandMarkdown,
+    RerunCommand,
+    EditCommandOutput,
+    PageCommandOutput,
+    SaveCommandOutput,
+    FoldOutput,
+    /// The block menu, from the keyboard.
+    CommandMenu,
     /// Labels URLs, paths, hashes and addresses on screen to pick one.
     Hints,
     /// Opens (or shows) the settings tab.
@@ -661,6 +672,14 @@ impl Action {
             "previous_prompt" => Self::PreviousPrompt,
             "next_prompt" => Self::NextPrompt,
             "copy_last_command_output" | "copy_last_output" | "show_last_command_output" => Self::CopyLastOutput,
+            "copy_command" | "copy_command_line" => Self::CopyCommand,
+            "copy_command_markdown" => Self::CopyCommandMarkdown,
+            "rerun_command" | "run_again" => Self::RerunCommand,
+            "edit_command_output" => Self::EditCommandOutput,
+            "page_command_output" => Self::PageCommandOutput,
+            "save_command_output" => Self::SaveCommandOutput,
+            "fold_output" | "toggle_fold" => Self::FoldOutput,
+            "command_menu" => Self::CommandMenu,
             "hints" | "open_url_with_hints" => Self::Hints,
             "settings" | "open_settings" | "edit_config_file" => Self::OpenSettings,
             "search" | "find" | "search_scrollback" => Self::Search,

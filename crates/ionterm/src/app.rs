@@ -2,6 +2,7 @@
 //! routes events between the window system, the panes and the renderer.
 
 mod background;
+mod blocks;
 mod drag;
 mod editing;
 mod files;
@@ -210,6 +211,17 @@ struct TermWindow {
     listening_checked: Option<Instant>,
     /// Port chips are showing (they keep the tab bar up by themselves).
     chips_shown: bool,
+    /// A command block's menu, while open.
+    block_menu: Option<crate::blocks::BlockMenu>,
+    /// The block under the mouse (its pane and prompt line), for its handle.
+    block_hover: Option<(PaneId, usize)>,
+    /// The mouse is on the block handle's dots.
+    block_handle_hovered: bool,
+    /// The pane whose scrollbar the mouse is near, or drags.
+    scrollbar_hover: Option<PaneId>,
+    scrollbar_drag: Option<PaneId>,
+    /// The pane whose sticky header the mouse is over.
+    sticky_hover: Option<PaneId>,
 }
 
 struct TabDrag {
@@ -1042,6 +1054,14 @@ impl App {
             Action::PreviousPrompt => self.jump_to_prompt(false),
             Action::NextPrompt => self.jump_to_prompt(true),
             Action::CopyLastOutput => self.copy_last_output(),
+            Action::CopyCommand => self.current_block_action(Some(crate::blocks::BlockAction::CopyCommand)),
+            Action::CopyCommandMarkdown => self.current_block_action(Some(crate::blocks::BlockAction::CopyMarkdown)),
+            Action::RerunCommand => self.current_block_action(Some(crate::blocks::BlockAction::Rerun)),
+            Action::EditCommandOutput => self.current_block_action(Some(crate::blocks::BlockAction::OpenInEditor)),
+            Action::PageCommandOutput => self.current_block_action(Some(crate::blocks::BlockAction::OpenInPager)),
+            Action::SaveCommandOutput => self.current_block_action(Some(crate::blocks::BlockAction::SaveOutput)),
+            Action::FoldOutput => self.current_block_action(Some(crate::blocks::BlockAction::Fold)),
+            Action::CommandMenu => self.current_block_action(None),
             Action::Hints => self.toggle_hints(),
             Action::OpenSettings => self.open_settings(),
             Action::Search => self.toggle_search(),
@@ -1187,6 +1207,8 @@ impl App {
                 w.relayout(&self.config, true);
             }
             _ => {
+                let tab = w.active_tab;
+                w.tabs[tab].active_pane_mut().scrolled_at = Some(Instant::now());
                 let pane = w.active_pane();
                 let page = pane.grid.1 as isize;
                 let mut term = pane.lock();
@@ -1339,6 +1361,11 @@ impl App {
             winit::event::MouseButton::Right => MouseButton::Right,
             _ => return FollowUp::None,
         };
+        // An open block menu takes the click.
+        let pressed = state == ElementState::Pressed;
+        if self.window.as_ref().is_some_and(|w| w.block_menu.is_some()) && self.blocks_click(button, pressed) {
+            return FollowUp::None;
+        }
         // A click dismisses hints.
         if state == ElementState::Pressed
             && let Some(w) = &mut self.window
@@ -1366,6 +1393,9 @@ impl App {
                 Some(BarAction::Chip(index, stop)) => self.chip_click(index, stop),
                 None => {}
             }
+            return FollowUp::None;
+        }
+        if self.blocks_click(button, pressed) {
             return FollowUp::None;
         }
         if self.files_click(button, pressed) {
@@ -1774,6 +1804,9 @@ impl App {
             }
             return;
         }
+        if w.blocks_motion(x as f32, y as f32, &self.config) {
+            return;
+        }
         if w.settings_hover(x as f32, y as f32) || w.search_hover(x as f32, y as f32) {
             return;
         }
@@ -1829,6 +1862,7 @@ impl App {
         });
         let chip_before = w.hovered_command().map(|c| (c.0, c.1));
         w.pointer_cell = cell;
+        w.update_block_hover();
         if w.hovered_command().map(|c| (c.0, c.1)) != chip_before {
             w.window.request_redraw();
         }
@@ -1918,6 +1952,7 @@ impl App {
             pane.write(&key.repeat(whole.unsigned_abs()));
         } else {
             pane.lock().scroll_display(whole);
+            pane.scrolled_at = Some(Instant::now());
             pane.update_hover(Some((col, row)), modifiers.control_key());
             w.window.request_redraw();
         }
@@ -2416,6 +2451,7 @@ impl TermWindow {
         self.draw_settings(config, theme, &mut items);
         self.draw_failed_marks(theme, &mut items);
         self.draw_command_info(theme, &mut items);
+        self.draw_blocks(config, theme, &mut items);
         self.draw_search(theme, &mut items);
         self.draw_hints(theme, &mut items);
         self.draw_files(theme, &mut items);
@@ -2627,6 +2663,9 @@ impl ApplicationHandler<UserEvent> for App {
                 ..
             } => {
                 let blink = self.blink_interval();
+                if self.block_menu_key(&event) {
+                    return;
+                }
                 let Some(w) = &mut self.window else { return };
                 // Hints take every key while shown (ctrl+shift+e again hides them).
                 if w.hints.is_some() {
@@ -2897,7 +2936,8 @@ impl App {
         let listening_wake = self.window.as_mut().and_then(|w| w.refresh_listening(&self.config, now));
         let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
         let search_wake = self.window.as_mut().and_then(|w| w.refresh_search(now));
-        let mut wake = [self.expire_files(now), progress_wake, search_wake, listening_wake].into_iter().flatten().min();
+        let scrollbar_wake = self.window.as_mut().and_then(|w| w.expire_scrollbars(now));
+        let mut wake = [self.expire_files(now), progress_wake, search_wake, listening_wake, scrollbar_wake].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

@@ -20,5 +20,6 @@ pub use color::{Color, Palette, Rgb};
 pub use diacritics::{PLACEHOLDER, diacritic_value};
 pub use graphics::{Image, ImageDraw, Placement};
 pub use term::{
+    FoldChange,
     CursorShape, FileRequest, Progress, ProgressState, CursorSnapshot, CursorStyle, Processor, Snapshot, Term, TermEvent, TermMode,
 };

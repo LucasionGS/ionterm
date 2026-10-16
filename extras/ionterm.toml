@@ -24,6 +24,8 @@ shell = ""                           # empty = your login shell
 term = "auto"                        # auto = xterm-ionterm if installed, else xterm-256color
 wheel_scroll_lines = 3
 advertise_sixel = false              # sixel always displays; announcing it makes yazi pick sixel over kitty graphics
+sticky_command = true                # keep a command at the top of the pane while scrolling through its output
+scrollbar = true                     # thin scrollbar with marks (prompts, failed commands, search hits) while scrolling or near the edge
 confirm_multiline_paste = true       # ask before pasting lines that would each run immediately (no bracketed paste)
 remote_control = true                # "ionterm @ ls", "ionterm @ send-text …": scripts drive ionterm over a socket only you can open
 single_instance = true               # new windows open in the running ionterm, so tabs can move between windows ("ionterm --standalone" opts out)
@@ -109,6 +111,10 @@ trail = false                        # a short fading streak behind the cursor w
 # "ctrl+shift+z" = "previous_prompt"
 # "ctrl+shift+x" = "next_prompt"
 # "ctrl+shift+g" = "copy_last_command_output"
+# Unbound by default: copy_command, copy_command_markdown, rerun_command,
+# edit_command_output, page_command_output, save_command_output,
+# fold_output, command_menu (the block at the top of the view when
+# scrolled back, else the last command)
 # "ctrl+shift+e" = "hints"
 # "ctrl+shift+f" = "search"
 # "ctrl+shift+h" = "show_scrollback"

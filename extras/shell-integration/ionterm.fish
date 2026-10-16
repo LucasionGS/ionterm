@@ -6,7 +6,7 @@ if not set -q __ionterm_integrated
         printf '\e]133;A\a'
     end
     function __ionterm_mark_start --on-event fish_preexec
-        printf '\e]133;C\a'
+        printf '\e]133;C;cmdline_url=%s\a' (string escape --style=url -- $argv[1])
     end
     function __ionterm_mark_end --on-event fish_postexec
         printf '\e]133;D;%s\a' $status

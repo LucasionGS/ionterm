@@ -78,7 +78,9 @@ crates/ionterm/          the app
                          settings.rs (settings tab, config writes, $EDITOR in the tab),
                          windows.rs (several windows: the current/parked switch, opening and closing, moving tabs and panes, tab drag-out),
                          editing.rs (ionterm-edit and the panel's Edit: sudo/password/conflict dialogs, the editor tab, writing back on save),
-                         forwards.rs (port forward picker, start/stop, saved forwards, tab bar chips, local listening ports)
+                         forwards.rs (port forward picker, start/stop, saved forwards, tab bar chips, local listening ports),
+                         blocks.rs (sticky header, scrollbar, block handle and menu, block actions, folding clicks)
+  blocks.rs              command blocks without a window: finding blocks, the sticky header's text, markdown, scrollbar geometry, the block menu widget
   edit.rs                editing server files: the probe/read/write scripts (in-place writes, conflict check, sudo), local copies
   forward.rs             port forwards (ssh -O forward/cancel, Windows tunnels), specs, the server's and local listening ports
   input.rs               key encoding (legacy + kitty), mouse encoding, KeyCombo, Action enum, DEFAULT_BINDINGS
@@ -209,5 +211,6 @@ The user wanted Tabby-style SSH file transfer: "ZMODEM shouldn't be the only way
   - Windows polish (own titlebar, installer).
   - `ionterm @` over a Windows named pipe (Unix socket done: `remote.rs`, `app/remote.rs`).
   - Before installing the terminfo locally, ship the planned `ssh` wrapper or shell integration that handles `TERM` for typed `ssh` (see "Settled decisions" above).
-- **v0.5 (chosen by the user, see PLAN.md):** ~~tabs between windows~~ (done), ~~edit remote files locally~~ (done), ~~port forwards from the tab~~ (done), command blocks you can act on. The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
+- **v0.5 (chosen by the user, see PLAN.md):** ~~tabs between windows~~ (done), ~~edit remote files locally~~ (done), ~~port forwards from the tab~~ (done), ~~command blocks you can act on~~ (done). The sticky header must be a settings toggle, and block actions must never get in the way of regular selection, clicking or mouse-reporting apps. Ask the open questions listed with each item before starting it.
+- **v0.5, still for the user to check** (needs the mouse, or their real setup): dragging a tab out of the window and onto another window; the tab menu's move entries; typing in the move/forward pickers; the sudo password dialog against a real server; clicking port chips; the block handle (hover, click, menu with the mouse), dragging the scrollbar and clicking the sticky header. Everything else was tested in the cage harness (multi-window moves and restore, ionterm-edit round trips and conflicts, forwards against a local sshd, folding, the block actions from the keyboard).
 - **Partly verified on a real server:** connecting to `ionserver`, its bash and zsh hooks, the file panel and rsync work there, and so do command info on hover, clear scrollback and `ionterm @ ls` (remote directory). Reconnect after a dropped connection is still only tested against the fake-ssh setup.

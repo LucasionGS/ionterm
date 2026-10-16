@@ -244,6 +244,12 @@ pub struct TerminalConfig {
     pub scrollback_pager: String,
     /// Listen for `ionterm @` commands from programs running as you.
     pub remote_control: bool,
+    /// Pin the command at the top of a pane while its output is scrolled
+    /// through (shell integration).
+    pub sticky_command: bool,
+    /// A thin scrollbar with marks for prompts, failed commands and search
+    /// hits, shown while scrolling or with the mouse near the edge.
+    pub scrollbar: bool,
     /// Open new windows in the ionterm that's already running (the same
     /// program), so tabs can move between them. Needs `remote_control`.
     pub single_instance: bool,
@@ -266,6 +272,8 @@ impl Default for TerminalConfig {
             scrollback_pager: "less -R +INPUT_LINE_NUMBER".into(),
             remote_control: true,
             single_instance: true,
+            sticky_command: true,
+            scrollbar: true,
             command: Vec::new(),
         }
     }

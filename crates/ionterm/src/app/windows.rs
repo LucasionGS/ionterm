@@ -341,6 +341,12 @@ impl App {
             trail: trail::Trail::default(),
             listening_checked: None,
             chips_shown: false,
+            block_menu: None,
+            block_hover: None,
+            block_handle_hovered: false,
+            scrollbar_hover: None,
+            scrollbar_drag: None,
+            sticky_hover: None,
         };
         w.carry_in(carried);
         if self.drops.is_none() {

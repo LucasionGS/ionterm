@@ -90,6 +90,8 @@ pub struct Pane {
     /// TCP ports its programs listen on (local panes), refreshed while its
     /// tab shows.
     pub listening: Vec<u16>,
+    /// When the view last scrolled, so the scrollbar shows for a moment.
+    pub scrolled_at: Option<Instant>,
 }
 
 /// A pane's progress: reported by the program (OSC 9;4), or read from a
@@ -166,6 +168,7 @@ impl Pane {
             runs_command: !config.command.is_empty(),
             forwards,
             listening: Vec::new(),
+            scrolled_at: None,
         })
     }
 
@@ -429,10 +432,9 @@ impl Pane {
     /// What the renderer needs to draw this pane.
     pub fn frame(&self, focused: bool, cursor_blink_on: bool) -> (Snapshot, FrameState) {
         let term = self.lock();
-        let top = term.viewport_to_absolute(0) as isize;
         let to_viewport = |start: (usize, usize), end: (usize, usize)| Selection {
-            start: (start.0 as isize - top, start.1),
-            end: (end.0 as isize - top, end.1),
+            start: (term.absolute_to_viewport(start.0), start.1),
+            end: (term.absolute_to_viewport(end.0), end.1),
         };
         let selection = self.selection_bounds(&term).map(|(start, end)| to_viewport(start, end));
         let hovered_link = self.hovered.as_ref().map(|link| match link.kind {

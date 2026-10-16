@@ -235,21 +235,26 @@ pub fn hit(layout: &SearchLayout, x: f32, y: f32) -> Option<Target> {
 }
 
 /// Highlights on the pane: every visible match, the current one stronger.
-/// `top` is the absolute line at the top of the view.
-pub fn draw_matches(search: &Search, top: usize, rows: usize, origin: [f32; 2], theme: &Theme, m: CellMetrics, out: &mut Vec<ChromeItem>) {
+/// `shown` is the absolute line on each viewport row (`None` for a folded
+/// output's summary line).
+pub fn draw_matches(search: &Search, shown: &[Option<usize>], origin: [f32; 2], theme: &Theme, m: CellMetrics, out: &mut Vec<ChromeItem>) {
     let accent = theme.cursor.0;
     let found = Rgb::new(0xe5, 0xc0, 0x7b);
+    let (Some(top), Some(bottom)) = (shown.iter().flatten().min().copied(), shown.iter().flatten().max().copied()) else { return };
     for (i, &(start, end)) in search.matches.iter().enumerate() {
-        if end.0 < top || start.0 >= top + rows {
+        if end.0 < top || start.0 > bottom {
             continue;
         }
         let current = search.current == Some(i);
-        for line in start.0.max(top)..=end.0.min(top + rows - 1) {
+        for (row, line) in shown.iter().enumerate().filter_map(|(row, l)| Some((row, (*l)?))) {
+            if line < start.0 || line > end.0 {
+                continue;
+            }
             let first = if line == start.0 { start.1 } else { 0 };
             let last = if line == end.0 { end.1 } else { usize::MAX / 2 };
             let width = (last.saturating_sub(first) + 1).min(10_000) as f32 * m.width;
             let x = origin[0] + first as f32 * m.width;
-            let y = origin[1] + (line - top) as f32 * m.height;
+            let y = origin[1] + row as f32 * m.height;
             out.push(ChromeItem::Rect {
                 rect: [x, y, width.min(10_000.0), m.height],
                 color: if current { accent } else { found },

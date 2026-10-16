@@ -69,9 +69,11 @@ impl TermWindow {
         let Some(&(start, _)) = state.bar.current.and_then(|i| state.bar.matches.get(i)) else { return };
         let Some(pane) = self.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == state.pane) else { return };
         let mut term = pane.lock();
-        let top = term.viewport_to_absolute(0);
+        // A match in a folded output unfolds it.
+        term.reveal(start.0);
         let rows = term.rows();
-        if start.0 < top || start.0 >= top + rows {
+        let row = term.absolute_to_viewport(start.0);
+        if row < 0 || row >= rows as isize {
             term.scroll_to_line(start.0.saturating_sub(rows / 2));
         }
     }
@@ -101,11 +103,13 @@ impl TermWindow {
         let Some(state) = &self.search else { return };
         let Some(pane) = self.tabs[self.active_tab].pane(state.pane) else { return };
         let m = self.renderer.cell_metrics();
-        let (top, rows) = {
+        let shown: Vec<Option<usize>> = {
             let term = pane.lock();
-            (term.viewport_to_absolute(0), term.rows())
+            (0..term.rows())
+                .map(|row| term.fold_at_row(row).is_none().then(|| term.viewport_to_absolute(row)))
+                .collect()
         };
-        search::draw_matches(&state.bar, top, rows, pane.origin, theme, m, out);
+        search::draw_matches(&state.bar, &shown, pane.origin, theme, m, out);
         if let Some(layout) = self.search_layout() {
             search::draw(&state.bar, &layout, theme, m, self.scale_factor as f32, out);
         }

@@ -9,12 +9,14 @@ use crate::color::Color;
 use crate::graphics::Anchor;
 
 /// Shell integration marks, which belong to a line's first row.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Marks {
     prompt: bool,
     output: bool,
     status: Option<i32>,
     ran: Option<CommandRun>,
+    folded: bool,
+    command: Option<Box<str>>,
 }
 
 impl Marks {
@@ -24,6 +26,8 @@ impl Marks {
             output: row.output,
             status: row.status,
             ran: row.ran,
+            folded: row.folded,
+            command: row.command.clone(),
         }
     }
 }
@@ -79,7 +83,7 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             lines.push(LogicalLine {
                 cells: std::mem::take(&mut current),
                 cursor: cursor_offset.take(),
-                marks,
+                marks: std::mem::take(&mut marks),
                 anchors: std::mem::take(&mut anchors),
             });
         }
@@ -133,6 +137,8 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
                     output: marks.output && first,
                     status: marks.status.filter(|_| first),
                     ran: marks.ran.filter(|_| first),
+                    folded: marks.folded && first,
+                    command: marks.command.clone().filter(|_| first),
                     anchors: std::mem::take(&mut row_anchors),
                 });
             }
@@ -163,6 +169,8 @@ pub fn reflow(rows: Vec<Row>, cursor: (usize, usize), cols: usize) -> Reflowed {
             output: marks.output && first,
             status: marks.status.filter(|_| first),
                     ran: marks.ran.filter(|_| first),
+            folded: marks.folded && first,
+            command: marks.command.clone().filter(|_| first),
             anchors: row_anchors,
         });
     }
@@ -220,6 +228,8 @@ mod tests {
             output: false,
             status: None,
             ran: None,
+            folded: false,
+            command: None,
             anchors: Vec::new(),
         }
     }
@@ -257,6 +267,8 @@ mod tests {
                 output: false,
                 status: None,
                 ran: None,
+                folded: false,
+                command: None,
                 anchors: Vec::new(),
             }],
             (0, 3),

@@ -105,6 +105,11 @@ pub struct Row {
     pub status: Option<i32>,
     /// On a prompt row: how long its command ran, and when it ended.
     pub ran: Option<CommandRun>,
+    /// On a prompt row: its command's output is folded (`Term::toggle_fold`).
+    pub folded: bool,
+    /// On a prompt row: the command line run from it, as the shell sent it
+    /// (OSC 133;C `cmdline`) or as typed after its prompt (from 133;B).
+    pub command: Option<Box<str>>,
     /// Image placements whose top-left corner is on this row.
     pub anchors: Vec<Anchor>,
 }
@@ -118,6 +123,8 @@ impl Row {
             output: false,
             status: None,
             ran: None,
+            folded: false,
+            command: None,
             anchors: Vec::new(),
         }
     }
