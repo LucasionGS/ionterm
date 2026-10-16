@@ -112,6 +112,7 @@ Patterns to follow:
 **Settled decisions (don't reverse them):**
 - **New tabs and splits are always local shells.** Only "Duplicate tab" reconnects an SSH tab to the same host. (They asked for this explicitly.)
 - **Never install the `xterm-ionterm` terminfo locally** (`~/.terminfo` or `/usr/share/terminfo`). With it installed, `TERM=xterm-ionterm` leaks into plain `ssh` and causes "unknown terminal", which they hate. `term = "auto"` therefore resolves to `xterm-256color` locally. ionterm-launched SSH connections install it on the server instead.
+- **The remote bootstrap wraps `ssh`, `sudo`, `su` and `doas`** (bash/zsh/fish) to run them with `TERM=xterm-256color`. `tic` installs the entry into the login user's `~/.terminfo`, so a second hop (jump server → host) or a switch to root can't find it and `clear`/`watch` fail with "unknown terminal type". Shells without hooks get `xterm-256color` outright.
 - **`advertise_sixel = false` by default:** announcing Sixel in DA1 makes yazi choose Sixel over the (better) kitty protocol.
 - **Tabs:** Windows Terminal style, top, auto (2+ tabs). Background `#0b0b0f`. Text must keep looking like their kitty.
 

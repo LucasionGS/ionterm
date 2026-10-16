@@ -2,7 +2,9 @@
 //!
 //! It makes sure the remote end knows ionterm's `TERM` (installing the
 //! terminfo entry with `tic` when it can, otherwise falling back to
-//! `xterm-256color`), then starts the user's login shell with a small hook
+//! `xterm-256color`). The entry usually lands in the user's own
+//! `~/.terminfo`, which the next host and other users can't see, so `ssh`,
+//! `sudo`, `su` and `doas` get `xterm-256color`. It then starts the user's login shell with a small hook
 //! that reports the working directory (OSC 7), the shell integration that
 //! marks prompts and commands (OSC 133, `crate::shell`), and the
 //! `ionterm-get` and `ionterm-put` commands (OSC 5379), for this session only. Hook files live
@@ -50,6 +52,13 @@ ionterm-put() {
   if [ ! -d "$d" ]; then echo "ionterm-put: $d: Not a directory" >&2; return 1; fi
   printf '\033]5379;put;%s\007' "$(__ionterm_b64 "$d")"
 }
+__ionterm_term() {
+  if [ "$TERM" = xterm-ionterm ]; then TERM=xterm-256color command "$@"; else command "$@"; fi
+}
+typeset -f ssh >/dev/null 2>&1 || function ssh { __ionterm_term ssh "$@"; }
+typeset -f sudo >/dev/null 2>&1 || function sudo { __ionterm_term sudo "$@"; }
+typeset -f su >/dev/null 2>&1 || function su { __ionterm_term su "$@"; }
+typeset -f doas >/dev/null 2>&1 || function doas { __ionterm_term doas "$@"; }
 IONTERM_EOF
 case "${shell##*/}" in
   fish)
@@ -92,6 +101,16 @@ function ionterm-put --description 'Upload files from this computer, through ion
     end
     printf '\e]5379;put;%s\a' (__ionterm_b64 $d)
 end
+for c in ssh sudo su doas
+    functions -q $c; and continue
+    function $c --inherit-variable c
+        if test "$TERM" = xterm-ionterm
+            env TERM=xterm-256color $c $argv
+        else
+            command $c $argv
+        end
+    end
+end
 __ionterm_osc7
 IONTERM_EOF
     exec "$shell" -l -C "source '$tmp/ionterm.fish'; rm -rf '$tmp'"
@@ -121,6 +140,8 @@ IONTERM_EOF
     ZDOTDIR=$tmp exec "$shell" -l
     ;;
   *)
+    # No hooks for this shell, so nothing would keep TERM from leaking.
+    TERM=xterm-256color
     rm -rf "$tmp"
     exec "$shell" -l
     ;;
