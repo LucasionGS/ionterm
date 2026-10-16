@@ -128,6 +128,11 @@ mod tests {
 
     #[test]
     fn knows_the_shells() {
+        // No integration on Windows: its shells are started as they are.
+        if cfg!(windows) {
+            assert_eq!(setup("bash"), None);
+            return;
+        }
         assert!(matches!(setup("/usr/bin/bash"), Some(Setup::Command(argv)) if argv[1] == "--rcfile"));
         assert!(matches!(setup("zsh"), Some(Setup::Env(vars)) if vars[0].0 == "ZDOTDIR"));
         assert_eq!(setup("/usr/bin/nu"), None);
