@@ -50,6 +50,7 @@ fn print_help() {
     println!("       ionterm ssh <args...>    Open a tab connected with ssh arguments (\"ionterm ssh -p 2222 user@host\")");
     println!("       ionterm @ <command>      Control a running ionterm (\"ionterm @ help\" lists commands)\n");
     println!("Options:");
+    println!("  -d, --directory <dir>  Start the shell (or -e command) in <dir> instead of the current directory");
     println!("  -e, --exec <command>   Run <command> instead of the shell (takes the rest of the line)");
     println!("  -w, --new-window       With host or ssh: open a new window instead of a tab in the running ionterm");
     println!("      --standalone       Start a separate ionterm instead of opening the window in the running one");
@@ -73,7 +74,8 @@ fn main() -> ExitCode {
     let config = Config::load();
     let mut new_window = false;
     let mut standalone = false;
-    let mut content = Content::Shell { cwd: None };
+    let mut content = Content::Shell { cwd: None, restore: true };
+    let mut directory = None;
     // `ionterm ssh`'s arguments as given, to hand them to a running ionterm.
     let mut ssh_given = Vec::new();
     // `host` and `ssh` go to a running ionterm as a new tab, unless asked not to.
@@ -111,6 +113,20 @@ fn main() -> ExitCode {
                     }
                 }
             }
+            "-d" | "--directory" => {
+                let Some(given) = args.next() else {
+                    eprintln!("Missing directory after {arg}. Usage: ionterm -d <directory>");
+                    return ExitCode::from(2);
+                };
+                // Absolute, since a running ionterm may open the window from another directory.
+                match std::path::absolute(&given) {
+                    Ok(path) if path.is_dir() => directory = Some(path),
+                    _ => {
+                        eprintln!("Not a directory: {given}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             "-w" | "--new-window" => new_window = true,
             "--standalone" => standalone = true,
             "-e" | "--exec" => {
@@ -123,6 +139,21 @@ fn main() -> ExitCode {
             }
             other => {
                 eprintln!("Unknown option: {other}. Run \"ionterm --help\" for usage.");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    if let Some(directory) = directory {
+        match &mut content {
+            // A window asked for one directory opens there, not as the saved session.
+            Content::Shell { cwd, restore } => {
+                *cwd = Some(directory);
+                *restore = false;
+            }
+            Content::Command { cwd, .. } => *cwd = Some(directory),
+            _ => {
+                eprintln!("-d can't be used with host or ssh, as the shell runs on the remote host.");
                 return ExitCode::from(2);
             }
         }
@@ -174,7 +205,11 @@ fn main() -> ExitCode {
 fn hand_off(content: &Content, ssh_given: &[String]) -> Option<ExitCode> {
     let socket = remote::find_instance()?;
     let mut args = vec!["new-window".to_string()];
-    if let Ok(dir) = std::env::current_dir() {
+    let cwd = match content {
+        Content::Shell { cwd, .. } | Content::Command { cwd, .. } => cwd.clone(),
+        _ => None,
+    };
+    if let Some(dir) = cwd.or_else(|| std::env::current_dir().ok()) {
         args.extend(["--cwd".into(), dir.display().to_string()]);
     }
     // Lets the compositor give the window the keyboard, as it would ours.

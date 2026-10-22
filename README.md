@@ -47,7 +47,7 @@ Config lives in `~/.config/ionterm/` (`%APPDATA%\ionterm\` on Windows):
 - `ionterm.toml`: fonts, window, cursor, scrollback and keybindings. Every key is optional; [extras/ionterm.toml](extras/ionterm.toml) lists them all with their defaults.
 - `theme.toml`: colours. The Ionix styler links this file in for you; without one you get the Ionix palette on a soft dark background.
 
-Run `ionterm -e <command>` to start something other than your shell, for example `ionterm -e btop`. With ionterm already running, new windows open in it (`single_instance` under `[terminal]`); `--standalone` starts a separate ionterm instead. Only the same program is joined, so a development build never hands its windows to the installed one.
+Run `ionterm -e <command>` to start something other than your shell, for example `ionterm -e btop`, and `ionterm -d <directory>` to start in a specific folder (`ionterm -d ~/projects -e nvim` works too). With ionterm already running, new windows open in it (`single_instance` under `[terminal]`); `--standalone` starts a separate ionterm instead. Only the same program is joined, so a development build never hands its windows to the installed one.
 
 ## Remote control
 

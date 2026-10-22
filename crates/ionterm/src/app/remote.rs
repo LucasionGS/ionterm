@@ -204,7 +204,7 @@ impl App {
                     return request.reply(BAD_ARGUMENTS, format!("{message} Usage: ionterm @ new-window --ssh [ssh options] <destination>"));
                 }
             },
-            (None, None) if parsed.words.is_empty() => Content::Shell { cwd },
+            (None, None) if parsed.words.is_empty() => Content::Shell { cwd, restore: true },
             (None, None) => Content::Command { argv: parsed.words.clone(), cwd },
         };
         let title = parsed.value(&["--title"]).map(str::to_string);

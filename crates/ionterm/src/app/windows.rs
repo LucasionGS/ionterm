@@ -64,8 +64,8 @@ impl NewWindow {
 /// What a new window opens with.
 pub enum Content {
     /// A shell in `cwd`. The first such window restores the saved session
-    /// instead, when there is one.
-    Shell { cwd: Option<PathBuf> },
+    /// instead, when there is one and `restore` allows it (not for `ionterm -d`).
+    Shell { cwd: Option<PathBuf>, restore: bool },
     /// A program instead of the shell (`ionterm -e`).
     Command { argv: Vec<String>, cwd: Option<PathBuf> },
     /// A connection to an ssh config host (`ionterm host`).
@@ -195,7 +195,7 @@ impl App {
     /// A new window with a shell in the current pane's directory.
     pub(super) fn new_window(&mut self) {
         let cwd = self.window.as_ref().and_then(|w| w.active_pane().working_dir());
-        self.request_window(NewWindow::new(Content::Shell { cwd }));
+        self.request_window(NewWindow::new(Content::Shell { cwd, restore: true }));
     }
 
     /// Opens the windows asked for since the last pass. If the first window
@@ -252,8 +252,9 @@ impl App {
                 Some(restored) => Ok(restored),
                 None => self.spawn_pane(m, None, None).map(|p| self.single_tab(p)),
             },
-            Content::Shell { cwd } => {
-                let restored = self.take_saved_session().and_then(|mut windows| {
+            Content::Shell { cwd, restore } => {
+                let saved = if restore { self.take_saved_session() } else { None };
+                let restored = saved.and_then(|mut windows| {
                     if windows.is_empty() {
                         return None;
                     }
