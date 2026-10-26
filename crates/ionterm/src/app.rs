@@ -2364,6 +2364,7 @@ impl TermWindow {
     }
 
     fn redraw(&mut self, config: &Config, theme: &Theme) {
+        self.place_sticky_headers(config);
         let area = self.content_area();
         let panel_focused = self.panel_focused();
         let settings_shown = self.settings_page().is_some();

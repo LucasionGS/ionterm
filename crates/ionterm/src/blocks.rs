@@ -10,7 +10,7 @@
 use std::time::{Duration, SystemTime};
 
 use ionterm_render::{CellMetrics, ChromeItem, text_columns};
-use ionterm_vt::{Rgb, Term, TermMode};
+use ionterm_vt::{Color, Rgb, Term, TermMode};
 
 use crate::layout::Rect;
 use crate::tabbar::{mix, truncate};
@@ -111,6 +111,10 @@ pub struct Sticky {
     pub status: Option<i32>,
     /// `took 2.5s · 5m ago`, or `running 1m 03s`.
     pub detail: String,
+    /// The header gets a row of its own, pushing the view down a row: only
+    /// while the bottom row is free, so nothing goes missing. Otherwise it
+    /// covers the top row, which can be scrolled back to.
+    pub push: bool,
 }
 
 /// The sticky header for a pane: only on the main screen, when its top
@@ -143,15 +147,20 @@ pub fn sticky(term: &Term, running: Option<Duration>) -> Option<Sticky> {
         (None, Some(ran)) => format!("took {} · {}", duration(ran.duration), ago(ran.finished)),
         (None, None) => String::new(),
     };
+    let last = term.rows() - 1;
+    let blank = |row: &ionterm_vt::Row| row.cells.iter().all(|c| c.is_empty() && c.bg == Color::Default);
+    let cursor_there = term.display_offset() == 0 && term.cursor_position().0 == last;
+    let push = last > 0 && !cursor_there && term.line(term.viewport_to_absolute(last)).is_none_or(blank);
     Some(Sticky {
         prompt: block.prompt,
         text,
         status: block.status.filter(|_| live.is_none()),
         detail,
+        push,
     })
 }
 
-/// Draws the header over a pane's top row.
+/// Draws the header on a pane's top row; `origin` is that row's left end.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_sticky(sticky: &Sticky, area: Rect, origin: [f32; 2], cols: usize, hovered: bool, theme: &Theme, m: CellMetrics, scale: f32, out: &mut Vec<ChromeItem>) {
     let bg = theme.background.0;
@@ -525,6 +534,23 @@ mod tests {
         assert_eq!(header.text, "make");
         assert_eq!(header.detail, "running 1m 03s");
         assert_eq!(header.status, None);
+        // The cursor is on the bottom row, so the header covers the top one.
+        assert!(!header.push);
+    }
+
+    #[test]
+    fn headers_push_the_view_down_when_the_bottom_is_free() {
+        let mut t = Term::new(30, 6, 100, Palette::default());
+        let mut p = Processor::new();
+        p.advance(&mut t, b"\x1b]133;A\x07$ \x1b]133;B\x07ssh host\r\n\x1b]133;C\x07");
+        for n in 1..=10 {
+            p.advance(&mut t, format!("motd {n}\r\n").as_bytes());
+        }
+        // The remote shell clears the screen, leaving rows free at the bottom.
+        p.advance(&mut t, b"\x1b[H\x1b[2Jline 1\r\nline 2\r\n");
+        let header = sticky(&t, Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(header.text, "ssh host");
+        assert!(header.push);
     }
 
     #[test]

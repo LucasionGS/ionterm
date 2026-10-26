@@ -459,6 +459,11 @@ impl Term {
         self.display_offset
     }
 
+    /// The cursor's (row, column) on the screen.
+    pub fn cursor_position(&self) -> (usize, usize) {
+        (self.cursor.row, self.cursor.col)
+    }
+
     /// The URI of a cell's OSC 8 hyperlink.
     pub fn hyperlink(&self, id: u32) -> Option<&str> {
         let index = (id as usize).checked_sub(1)?;

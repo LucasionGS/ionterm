@@ -48,6 +48,9 @@ pub struct Pane {
     pub area: Rect,
     /// Top-left corner of the grid.
     pub origin: [f32; 2],
+    /// The sticky header has a row of its own: the grid is drawn a row
+    /// lower, without its (blank) bottom row.
+    pub header_row: bool,
     pub grid: (usize, usize),
     /// From OSC 0/2; empty until the shell sets one.
     pub title: String,
@@ -145,6 +148,7 @@ impl Pane {
             wakeup_pending,
             area: Rect::default(),
             origin: [0.0, 0.0],
+            header_row: false,
             grid: (cols, rows),
             title: String::new(),
             cwd,
@@ -326,7 +330,7 @@ impl Pane {
     /// terminal and the shell when the size in cells changes.
     pub fn place(&mut self, area: Rect, padding: f32, m: CellMetrics, force: bool) {
         self.area = area;
-        self.origin = [area.x + padding, area.y + padding];
+        self.origin = [area.x + padding, area.y + padding + if self.header_row { m.height } else { 0.0 }];
         let cols = (((area.width - 2.0 * padding) / m.width) as usize).max(2);
         let rows = (((area.height - 2.0 * padding) / m.height) as usize).max(1);
         if (cols, rows) == self.grid && !force {
@@ -342,6 +346,20 @@ impl Pane {
         }
         self.grid = (cols, rows);
         self.pty.resize(pty_size(cols, rows, m));
+    }
+
+    /// Gives the sticky header a row of its own above the grid, or takes it
+    /// away again.
+    pub fn set_header_row(&mut self, header_row: bool, m: CellMetrics) {
+        if header_row != self.header_row {
+            self.header_row = header_row;
+            self.origin[1] += if header_row { m.height } else { -m.height };
+        }
+    }
+
+    /// The top of the text area, where the sticky header goes.
+    pub fn text_top(&self, m: CellMetrics) -> f32 {
+        self.origin[1] - if self.header_row { m.height } else { 0.0 }
     }
 
     /// The cell under a point, clamped to the grid.
@@ -447,7 +465,13 @@ impl Pane {
             selection,
             hovered_link,
         };
-        (term.snapshot(), frame)
+        let mut snapshot = term.snapshot();
+        if self.header_row && snapshot.rows > 1 {
+            // Moved down under the header, the blank bottom row is out of the pane.
+            snapshot.lines.pop();
+            snapshot.rows -= 1;
+        }
+        (snapshot, frame)
     }
 }
 

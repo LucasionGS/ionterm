@@ -40,11 +40,28 @@ impl TermWindow {
         blocks::sticky(&pane.lock(), running)
     }
 
-    /// Where a pane's sticky header is drawn (over its top row).
+    /// Where a pane's sticky header is drawn (on its top row).
     fn sticky_rect(&self, pane: PaneId) -> Option<Rect> {
         let pane = self.tabs[self.active_tab].pane(pane)?;
         let m = self.renderer.cell_metrics();
-        Some(Rect::new(pane.area.x, pane.area.y, pane.area.width, pane.origin[1] + m.height - pane.area.y))
+        Some(Rect::new(pane.area.x, pane.area.y, pane.area.width, pane.text_top(m) + m.height - pane.area.y))
+    }
+
+    /// Moves the grid of each pane in the active tab down a row while its
+    /// sticky header has room for a row of its own, and back up after.
+    pub(super) fn place_sticky_headers(&mut self, config: &Config) {
+        let m = self.renderer.cell_metrics();
+        let tab = &self.tabs[self.active_tab];
+        let rows: Vec<(PaneId, bool)> = tab
+            .panes
+            .iter()
+            .map(|p| (p.id, self.sticky_for(p.id, config).is_some_and(|s| s.push)))
+            .collect();
+        for (id, header_row) in rows {
+            if let Some(pane) = self.tabs[self.active_tab].pane_mut(id) {
+                pane.set_header_row(header_row, m);
+            }
+        }
     }
 
     /// Whether a pane's scrollbar shows: there's history, it isn't a
@@ -143,7 +160,8 @@ impl TermWindow {
         for pane in tab.panes.iter().filter(|p| tab.is_visible(p.id)) {
             if let Some(sticky) = self.sticky_for(pane.id, config) {
                 let hovered = self.sticky_hover == Some(pane.id);
-                blocks::draw_sticky(&sticky, pane.area, pane.origin, pane.grid.0, hovered, theme, m, scale, out);
+                let origin = [pane.origin[0], pane.text_top(m)];
+                blocks::draw_sticky(&sticky, pane.area, origin, pane.grid.0, hovered, theme, m, scale, out);
             }
             if self.scrollbar_shown(pane.id, config, now) {
                 let track = blocks::scrollbar_track(pane.area, scale);
