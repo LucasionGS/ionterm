@@ -95,6 +95,14 @@ pub struct Pane {
     pub listening: Vec<u16>,
     /// When the view last scrolled, so the scrollbar shows for a moment.
     pub scrolled_at: Option<Instant>,
+    /// The Claude Code session running here, as its hooks report it.
+    pub claude: Option<crate::claude::Agent>,
+    /// You shared this pane with Claude: its MCP tools can read it and run
+    /// commands in it.
+    pub claude_shared: bool,
+    /// Text for "Ask Claude" to paste once the Claude started here is ready,
+    /// and until when to wait for it.
+    pub claude_paste: Option<(String, Instant)>,
 }
 
 /// A pane's progress: reported by the program (OSC 9;4), or read from a
@@ -173,6 +181,9 @@ impl Pane {
             forwards,
             listening: Vec::new(),
             scrolled_at: None,
+            claude: None,
+            claude_shared: false,
+            claude_paste: None,
         })
     }
 

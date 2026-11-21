@@ -103,6 +103,11 @@ impl Pty {
             command.env("IONTERM_SOCKET", socket);
         }
         command.env("IONTERM_PANE", pane.to_string());
+        // The Claude Code plugin's hooks call this program, so a development
+        // build reports to itself rather than to the installed ionterm.
+        if let Ok(exe) = std::env::current_exe() {
+            command.env("IONTERM_BIN", exe);
+        }
 
         let child = pair.slave.spawn_command(command).context("starting the shell")?;
         // The child holds its own handle; keeping ours open would stop us from

@@ -157,7 +157,25 @@ pub const SECTIONS: &[Section] = &[
         ],
         shortcuts: false,
     },
+    // Last, so it can be left out where Claude Code isn't installed (`sections`).
+    Section {
+        title: "Claude Code",
+        icon: '\u{F167A}',
+        settings: &[
+            setting("claude", "status", "Status in tabs", "Each tab shows its Claude session working, waiting for you or done. Installs ionterm's plugin for Claude Code.", Control::Toggle),
+            setting("claude", "notify", "Notifications", "Tell me when Claude needs me or finishes while I'm in another tab or window (with status in tabs).", Control::Toggle),
+            setting("claude", "overview", "Agents overview", "ctrl+shift+a lists every Claude session in every window; ctrl+shift+j jumps to the next one that needs you.", Control::Toggle),
+            setting("claude", "ask", "Ask Claude", "\"Ask Claude\" in a command's menu and the palette pastes its output (or the selection) into Claude.", Control::Toggle),
+            setting("claude", "panes", "Pane access", "Claude can read panes you share with it and run commands there (\"Share with Claude\"); anything that isn't read-only asks you first.", Control::Toggle),
+        ],
+        shortcuts: false,
+    },
 ];
+
+/// The settings sections shown: Claude Code's only where it's installed.
+pub fn sections() -> &'static [Section] {
+    if crate::claude::available() { SECTIONS } else { &SECTIONS[..SECTIONS.len() - 1] }
+}
 
 /// A setting's value as shown.
 #[derive(Clone, Debug, PartialEq)]
@@ -227,6 +245,11 @@ pub fn value_of(config: &Config, setting: &Setting) -> Value {
         ("files", "show_hidden") => Value::Bool(config.files.show_hidden),
         ("files", "panel_width") => Value::Number(f64::from(config.files.panel_width)),
         ("hints", "open_file") => Value::Text(config.hints.open_file.clone()),
+        ("claude", "status") => Value::Bool(config.claude.status),
+        ("claude", "notify") => Value::Bool(config.claude.notify),
+        ("claude", "overview") => Value::Bool(config.claude.overview),
+        ("claude", "ask") => Value::Bool(config.claude.ask),
+        ("claude", "panes") => Value::Bool(config.claude.panes),
         _ => Value::Unset,
     }
 }
@@ -360,12 +383,12 @@ impl SettingsPage {
     }
 
     fn settings(&self) -> &'static [Setting] {
-        SECTIONS[self.section].settings
+        sections()[self.section].settings
     }
 
     /// Whether the section shown is the cheatsheet.
     pub fn on_shortcuts(&self) -> bool {
-        SECTIONS[self.section].shortcuts
+        sections()[self.section].shortcuts
     }
 
     /// The cheatsheet as filtered now.
@@ -382,7 +405,7 @@ impl SettingsPage {
             Key::Named(NamedKey::ArrowDown) => self.scroll_by(1),
             Key::Named(NamedKey::PageUp) => self.scroll_by(-page),
             Key::Named(NamedKey::PageDown) => self.scroll_by(page),
-            Key::Named(NamedKey::Tab) => self.select_section((self.section + 1) % SECTIONS.len()),
+            Key::Named(NamedKey::Tab) => self.select_section((self.section + 1) % sections().len()),
             Key::Named(NamedKey::Escape) => {
                 self.shortcut_filter.set("");
                 self.scroll = 0;
@@ -396,7 +419,7 @@ impl SettingsPage {
     }
 
     fn select_section(&mut self, section: usize) {
-        self.section = section.min(SECTIONS.len() - 1);
+        self.section = section.min(sections().len() - 1);
         self.focus = 0;
         self.scroll = 0;
         self.typing = None;
@@ -466,7 +489,7 @@ impl SettingsPage {
         if let Some(picker) = &mut self.picker {
             return picker_key(picker, key, text, mods).map(|picked| {
                 self.picker = None;
-                let setting = SECTIONS[0].settings.iter().find(|s| matches!(s.control, Control::Font)).expect("a font row");
+                let setting = sections()[0].settings.iter().find(|s| matches!(s.control, Control::Font)).expect("a font row");
                 picked.map(|family| Self::set(setting, Value::Text(family), &Config::default()))
             })?;
         }
@@ -499,7 +522,7 @@ impl SettingsPage {
                 self.focus = (self.focus + 1) % rows;
                 self.keep_focus_visible();
             }
-            Key::Named(NamedKey::Tab) => self.select_section((self.section + 1) % SECTIONS.len()),
+            Key::Named(NamedKey::Tab) => self.select_section((self.section + 1) % sections().len()),
             Key::Named(NamedKey::PageUp) => self.select_section(self.section.saturating_sub(1)),
             Key::Named(NamedKey::PageDown) => self.select_section(self.section + 1),
             Key::Named(NamedKey::ArrowLeft) => return self.step(self.focus, -1, config),
@@ -532,7 +555,7 @@ impl SettingsPage {
                 Some(Target::PickerRow(i)) => {
                     let picker = self.picker.take()?;
                     let family = picker.shown().get(i)?.to_string();
-                    let setting = SECTIONS[0].settings.iter().find(|s| matches!(s.control, Control::Font))?;
+                    let setting = sections()[0].settings.iter().find(|s| matches!(s.control, Control::Font))?;
                     return Some(Self::set(setting, Value::Text(family), &Config::default()));
                 }
                 // A click outside the list closes it.
@@ -669,7 +692,7 @@ pub fn layout(page: &SettingsPage, area: Rect, m: CellMetrics, scale: f32) -> Pa
     let pad = px(24.0);
     let nav_width = m.width * 22.0;
     let nav_row = (m.height * 2.0).round();
-    let nav = (0..SECTIONS.len())
+    let nav = (0..sections().len())
         .map(|i| (i, Rect::new(area.x + pad, area.y + pad + m.height * 2.5 + i as f32 * nav_row, nav_width, nav_row)))
         .collect();
 
@@ -681,7 +704,7 @@ pub fn layout(page: &SettingsPage, area: Rect, m: CellMetrics, scale: f32) -> Pa
 
     // The cheatsheet: a search field over a list of short lines.
     let line_height = (m.height * 1.45).round();
-    let (filter, list_top) = if SECTIONS[page.section].shortcuts {
+    let (filter, list_top) = if sections()[page.section].shortcuts {
         let filter = Rect::new(content_x, top, content_width, (m.height * 1.6).round());
         let list_top = filter.y + filter.height + px(12.0);
         visible = (((area.y + area.height - pad - list_top) / line_height).floor() as usize).max(1);
@@ -690,7 +713,7 @@ pub fn layout(page: &SettingsPage, area: Rect, m: CellMetrics, scale: f32) -> Pa
         (None, top)
     };
 
-    let settings = SECTIONS[page.section].settings;
+    let settings = sections()[page.section].settings;
     let rows = settings
         .iter()
         .enumerate()
@@ -857,13 +880,13 @@ pub fn draw(page: &SettingsPage, layout: &PageLayout, ctx: &DrawContext, theme: 
         if selected {
             out.push(rounded(Rect::new(r.x, r.y + px(6.0), px(3.0), r.height - px(12.0)), px(2.0), accent));
         }
-        let section = &SECTIONS[*i];
+        let section = &sections()[*i];
         let y = r.y + ((r.height - m.height) / 2.0).round();
         out.push(text(section.icon.to_string(), r.x + px(12.0), y, if selected { accent } else { muted }, false));
         out.push(text(section.title.into(), r.x + px(12.0) + 2.5 * m.width, y, if selected { fg } else { muted }, selected));
     }
 
-    let settings = SECTIONS[page.section].settings;
+    let settings = sections()[page.section].settings;
     let defaults = Config::default();
     for row in &layout.rows {
         let setting = &settings[row.index];
@@ -1019,7 +1042,7 @@ pub fn draw(page: &SettingsPage, layout: &PageLayout, ctx: &DrawContext, theme: 
             } else if page.hover == Some(Target::PickerRow(*i)) {
                 out.push(rounded(*r, px(6.0), control_bg));
             }
-            let current = value_of(ctx.config, &SECTIONS[0].settings[0]) == Value::Text(family.to_string());
+            let current = value_of(ctx.config, &sections()[0].settings[0]) == Value::Text(family.to_string());
             let y = r.y + ((r.height - m.height) / 2.0).round();
             out.push(ChromeItem::FontText {
                 text: (*family).clone(),
@@ -1164,7 +1187,7 @@ mod tests {
     #[test]
     fn every_setting_has_a_value() {
         let config = Config::default();
-        for section in SECTIONS {
+        for section in sections() {
             for setting in section.settings {
                 let value = value_of(&config, setting);
                 match setting.control {

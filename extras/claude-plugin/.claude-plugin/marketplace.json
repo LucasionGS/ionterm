@@ -1,0 +1,15 @@
+{
+  "name": "ionterm",
+  "description": "The Claude Code plugin that ships with ionterm",
+  "owner": {
+    "name": "Lucasion",
+    "url": "https://github.com/LucasionGS/ionterm"
+  },
+  "plugins": [
+    {
+      "name": "ionterm",
+      "source": "./",
+      "description": "Claude Code state in ionterm tabs, and access to the terminal panes you share"
+    }
+  ]
+}

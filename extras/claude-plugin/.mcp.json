@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ionterm": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "exec \"${IONTERM_BIN:-ionterm}\" mcp"
+      ]
+    }
+  }
+}

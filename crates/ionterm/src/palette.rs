@@ -32,13 +32,17 @@ pub enum PaletteAction {
     ForwardOther(bool),
     /// Stop the forward listening on this port (on the server when `true`).
     Unforward(bool, u16),
+    /// Show this pane, in whichever window has it (the agents popup).
+    FocusPane(crate::layout::PaneId),
+    /// Open a tab running Claude Code.
+    NewClaude,
 }
 
 impl PaletteAction {
     /// Whether the query filters it; the rest ("New connection…") stays
     /// at the end.
     fn searchable(&self) -> bool {
-        !matches!(self, Self::NewConnection | Self::Edit(_))
+        !matches!(self, Self::NewConnection | Self::Edit(_) | Self::NewClaude)
     }
 }
 

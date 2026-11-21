@@ -22,6 +22,8 @@ pub enum MenuCommand {
     Color(Option<Rgb>),
     Close,
     CloseOthers,
+    /// Shares the tab's active pane with Claude's pane tools, or stops.
+    ShareWithClaude,
 }
 
 /// An open menu for one tab.
@@ -33,6 +35,9 @@ pub struct Menu {
     pub hover: Option<MenuCommand>,
     /// The tab is an SSH connection ionterm opened: offer "Files…".
     pub ssh: bool,
+    /// Pane access for Claude is on: offer sharing, and whether the pane
+    /// already is shared.
+    pub claude: Option<bool>,
 }
 
 pub struct MenuLayout {
@@ -85,7 +90,8 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     let width = (m.width * 24.0).max(px(220.0)).max(swatch_row_width + 2.0 * pad);
     // Rename, duplicate, move ×2, (files, forward), colour label, swatches,
     // close, close others.
-    let files = 2.0 * f32::from(u8::from(menu.ssh));
+    // "Share with Claude" counts with the SSH rows: they all sit above the colours.
+    let files = 2.0 * f32::from(u8::from(menu.ssh)) + f32::from(u8::from(menu.claude.is_some()));
     let rows = 8.0 + files;
     let height = rows * row + 2.0 * pad + px(8.0);
     // Keep the menu inside the window.
@@ -106,6 +112,10 @@ pub fn layout(menu: &Menu, theme: &Theme, m: CellMetrics, scale: f32, window: Re
     if menu.ssh {
         entries.push((MenuCommand::Files, item(4.0, 0.0), "Files…"));
         entries.push((MenuCommand::Forward, item(5.0, 0.0), "Forward a port…"));
+    }
+    if let Some(shared) = menu.claude {
+        let label = if shared { "Stop sharing with Claude" } else { "Share with Claude" };
+        entries.push((MenuCommand::ShareWithClaude, item(files + 3.0, 0.0), label));
     }
     // Then the "Colour" label, and the swatches.
     let color_label = item(4.0 + files, 0.0);
@@ -289,6 +299,7 @@ mod tests {
             y: 10.0,
             hover: None,
             ssh: true,
+            claude: None,
         };
         let layout = layout(&menu, &theme, m, 1.0, Rect::new(0.0, 0.0, 1000.0, 800.0));
         for (command, r) in &layout.swatches {

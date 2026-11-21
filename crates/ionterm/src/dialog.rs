@@ -189,7 +189,10 @@ pub struct DialogLayout {
 pub fn layout<P>(dialog: &Dialog<P>, m: CellMetrics, scale: f32, window: Rect) -> DialogLayout {
     let px = |v: f32| (v * scale).round();
     let pad = px(18.0);
-    let width = (m.width * 56.0).min(window.width - px(32.0)).max(m.width * 24.0).round();
+    let button_w = |label: &str| (text_columns(label) as f32 + 4.0) * m.width;
+    // Wide enough for its buttons, which would otherwise poke out on the left.
+    let buttons_w: f32 = dialog.buttons.iter().map(|b| button_w(&dialog.button_label(b)) + px(8.0)).sum::<f32>() - px(8.0) + 2.0 * pad;
+    let width = (m.width * 56.0).max(buttons_w).min(window.width - px(32.0)).max(m.width * 24.0).round();
     let cols = ((width - 2.0 * pad) / m.width).max(8.0) as usize;
     let line_h = (m.height * 1.25).round();
     let row = (m.height * 1.8).round();
@@ -220,7 +223,6 @@ pub fn layout<P>(dialog: &Dialog<P>, m: CellMetrics, scale: f32, window: Rect) -
         y += line_h;
     }
     y += px(6.0);
-    let button_w = |label: &str| (text_columns(label) as f32 + 4.0) * m.width;
     let mut right = x + width - pad;
     let mut buttons: Vec<Rect> = dialog
         .buttons

@@ -1,0 +1,11 @@
+{
+  "name": "ionterm",
+  "version": "0.1.0",
+  "description": "Shows each Claude Code session's state in its ionterm tab, and lets Claude read and run commands in the terminal panes you share with it. Does nothing outside ionterm.",
+  "author": {
+    "name": "Lucasion",
+    "url": "https://github.com/LucasionGS/ionterm"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/LucasionGS/ionterm"
+}

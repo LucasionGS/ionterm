@@ -46,6 +46,9 @@ impl App {
         if matches!(command.as_str(), "host" | "ssh") {
             return self.remote_connect(command, args);
         }
+        if command.starts_with("claude-") {
+            return self.claude_command(caller, command, args);
+        }
         let (flags, valued): (&[&str], &[&str]) = match command.as_str() {
             "ls" | "list" => (&[], &[]),
             "version" => {

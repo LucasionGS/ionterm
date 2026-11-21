@@ -40,6 +40,8 @@ pub enum Purpose {
     Edit(u64, super::editing::Question),
     /// A port forward typed in (`reverse` = from the server to here).
     Forward { pane: PaneId, reverse: bool },
+    /// "Let Claude run this?" for a job of Claude's pane tools.
+    ClaudeRun(u64),
 }
 
 /// Transfers whose destination name is taken, asked about one at a time.
@@ -760,6 +762,7 @@ impl App {
         match dialog.purpose {
             Purpose::Edit(id, question) => self.edit_answer(id, question, answer),
             Purpose::Forward { pane, reverse } => self.forward_answer(pane, reverse, answer),
+            Purpose::ClaudeRun(job) => self.claude_run_answer(job, answer),
             Purpose::Delete { pane, paths } => {
                 if answer.button != Some(0) {
                     return;

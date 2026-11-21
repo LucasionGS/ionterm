@@ -18,6 +18,11 @@ pub struct TabInfo {
     pub progress: Option<TabProgress>,
     /// What happened in it while you were in another tab.
     pub activity: Activity,
+    /// A Claude session in it waits for you: the icon shows in the
+    /// theme's yellow.
+    pub attention: bool,
+    /// A pane in it is shared with Claude: the icon shows in Claude's orange.
+    pub shared: bool,
 }
 
 /// Something that happened in a tab you weren't looking at.
@@ -425,12 +430,19 @@ fn draw_tabs(
             _ if tab.active || hovered => foreground,
             _ => muted,
         };
+        let icon_color = if tab.attention {
+            theme.palette().colors[3]
+        } else if tab.shared {
+            crate::app::CLAUDE_COLOR
+        } else {
+            fg
+        };
         out.push(ChromeItem::Text {
             text: tab.icon.to_string(),
             x: slot.icon_x,
             y: slot.text_y,
-            color: fg,
-            bold: false,
+            color: icon_color,
+            bold: tab.attention,
         });
         match &rename {
             Some(edit) if edit.tab == i => {
@@ -689,10 +701,15 @@ fn draw_powerline(
     }
 }
 
+/// Whether a program is an interactive shell.
+pub fn is_shell(process: &str) -> bool {
+    matches!(process, "fish" | "bash" | "zsh" | "sh" | "dash" | "nu" | "pwsh" | "powershell" | "cmd" | "elvish" | "xonsh" | "ksh" | "tcsh")
+}
+
 /// A Nerd Font icon for the program running in a tab.
 pub fn process_icon(process: Option<&str>) -> char {
     match process.unwrap_or_default() {
-        "fish" | "bash" | "zsh" | "sh" | "dash" | "nu" | "pwsh" | "powershell" | "cmd" | "elvish" | "xonsh" => '\u{F489}',
+        shell if is_shell(shell) => '\u{F489}',
         "nvim" | "vim" | "vi" | "hx" | "helix" | "nano" | "micro" | "kak" => '\u{E62B}',
         "ssh" | "mosh" | "mosh-client" | "sshpass" => '\u{F233}',
         "docker" | "podman" | "lazydocker" => '\u{F308}',
@@ -705,6 +722,7 @@ pub fn process_icon(process: Option<&str>) -> char {
         "man" | "less" | "more" | "bat" => '\u{F02D}',
         "yazi" | "ranger" | "lf" | "nnn" | "ifm" | "mc" => '\u{F07B}',
         "mariadb" | "mysql" | "psql" | "sqlite3" => '\u{F1C0}',
+        "claude" => '\u{F167A}',
         _ => '\u{F120}',
     }
 }

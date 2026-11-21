@@ -260,6 +260,7 @@ impl App {
         use crate::input::MouseButton;
         let now = Instant::now();
         let config = &self.config;
+        let ask_claude = config.claude.ask && crate::claude::available();
         let Some(w) = &mut self.window else { return false };
         let (x, y) = (w.pointer.x as f32, w.pointer.y as f32);
         let m = w.renderer.cell_metrics();
@@ -314,7 +315,7 @@ impl App {
             && dots.contains(x, y)
         {
             let folded = w.tabs[w.active_tab].pane(pane).is_some_and(|p| p.lock().is_folded(block.prompt));
-            w.block_menu = BlockMenu::new(pane, block, folded, x, y);
+            w.block_menu = BlockMenu::new(pane, block, folded, x, y, ask_claude);
             w.window.request_redraw();
             return true;
         }
@@ -360,7 +361,7 @@ impl App {
     }
 
     /// The block keyboard actions work on, in the active pane.
-    fn current_block(&self) -> Option<(PaneId, Block)> {
+    pub(super) fn current_block(&self) -> Option<(PaneId, Block)> {
         let w = self.window.as_ref()?;
         let pane = w.active_pane();
         let block = blocks::current_block(&pane.lock(), pane.command.is_some())?;
@@ -379,13 +380,14 @@ impl App {
             Some(action) => self.block_action(pane, block, action),
             // The menu, by the block's prompt (or the top of the pane).
             None => {
+                let ask_claude = self.config.claude.ask && crate::claude::available();
                 let Some(w) = &mut self.window else { return };
                 let Some(p) = w.tabs[w.active_tab].pane(pane) else { return };
                 let m = w.renderer.cell_metrics();
                 let folded = p.lock().is_folded(block.prompt);
                 let row = p.lock().absolute_to_viewport(block.prompt).max(0);
                 let (x, y) = (p.origin[0], p.origin[1] + (row + 1) as f32 * m.height);
-                w.block_menu = BlockMenu::new(pane, block, folded, x, y);
+                w.block_menu = BlockMenu::new(pane, block, folded, x, y, ask_claude);
                 if let Some(menu) = &mut w.block_menu {
                     menu.hover = Some(0);
                 }
@@ -452,6 +454,7 @@ impl App {
                     Err(error) => w.show_toast(format!("Couldn't save the output: {error}")),
                 }
             }
+            BlockAction::AskClaude => self.ask_claude_block(pane, &block),
             BlockAction::Fold => {
                 let change = p.lock().toggle_fold(block.prompt);
                 match change {

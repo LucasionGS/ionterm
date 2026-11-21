@@ -3,6 +3,7 @@
 
 mod background;
 mod blocks;
+mod claude;
 mod drag;
 mod editing;
 mod files;
@@ -17,6 +18,7 @@ mod settings;
 mod trail;
 mod windows;
 
+pub use claude::CLAUDE_COLOR;
 pub use windows::{Content, NewWindow};
 
 use std::collections::HashMap;
@@ -50,7 +52,7 @@ use crate::palette::{self, Palette, PaletteAction, PaletteItem, PaneTarget};
 use crate::ssh::{self, Connection, HostExtras};
 use crate::pane::{Pane, SelectionKind, SelectionState};
 use crate::tab::Tab;
-use crate::tabbar::{self, Activity, Hit, TabInfo};
+use crate::tabbar::{self, Activity, Hit, TabInfo, TabProgress};
 use crate::textfield::TextField;
 use crate::notifications;
 use crate::theme::Theme;
@@ -98,6 +100,8 @@ pub enum UserEvent {
     Edit(u64, crate::edit::Event),
     /// Background work on a pane's port forwards.
     Forward(PaneId, crate::forward::Event),
+    /// Claude Code work in the background: the plugin, a command run for it.
+    Claude(claude::ClaudeEvent),
 }
 
 pub struct App {
@@ -129,6 +133,8 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     reload_at: Option<Instant>,
     next_pane_id: PaneId,
+    /// Claude Code jobs and the plugin's install.
+    claude: claude::Claude,
     /// Set when the last window closes; the event loop exits on its next pass.
     exit_requested: bool,
     /// The first window is opened and remote control started.
@@ -292,6 +298,7 @@ impl App {
             clipboard: None,
             reload_at: None,
             next_pane_id: 1,
+            claude: claude::Claude::default(),
             exit_requested: false,
             started: false,
             session_due: Instant::now(),
@@ -419,7 +426,15 @@ impl App {
     /// The command palette: every action with its keys, then the hosts.
     fn open_command_palette(&mut self) {
         let extras = ssh::load_extras();
-        let commands = crate::commands::catalogue(&self.bindings).into_iter().map(|command| PaletteItem {
+        let claude = &self.config.claude;
+        let claude_shows = |action: Action| match action {
+            Action::ClaudeAgents | Action::ClaudeNextWaiting => crate::claude::available() && claude.overview,
+            Action::AskClaude => crate::claude::available() && claude.ask,
+            Action::ShareWithClaude => crate::claude::available() && claude.panes,
+            Action::NewClaude | Action::RemoveClaudePlugin => crate::claude::available(),
+            _ => true,
+        };
+        let commands = crate::commands::catalogue(&self.bindings).into_iter().filter(|c| claude_shows(c.action)).map(|command| PaletteItem {
             title: command.title.into(),
             detail: command.keys,
             group: command.group.into(),
@@ -475,6 +490,8 @@ impl App {
                 }
             }
             PaletteAction::ForwardOther(reverse) => self.ask_forward(reverse),
+            PaletteAction::FocusPane(id) => self.show_pane_anywhere(id),
+            PaletteAction::NewClaude => self.new_claude_tab(),
             PaletteAction::Unforward(reverse, listen) => {
                 if let Some(pane) = self.window.as_ref().map(|w| w.active_pane().id) {
                     self.stop_forward(pane, reverse, listen);
@@ -604,9 +621,14 @@ impl App {
         let background_changed = (&config.window.background_image, config.window.background_image_opacity)
             != (&self.config.window.background_image, self.config.window.background_image_opacity);
         self.bindings = input::build_bindings(&config.keybindings);
+        let claude_changed = config.claude != self.config.claude;
         self.config = config;
         self.theme = theme;
         self.for_each_window(|app| app.apply_config(font_changed, background_changed));
+        // Switching a Claude feature on installs the plugin it needs.
+        if claude_changed {
+            self.ensure_claude_plugin();
+        }
     }
 
     /// Brings the window being worked on in line with a reloaded config.
@@ -865,6 +887,10 @@ impl App {
             return;
         }
         match command {
+            MenuCommand::ShareWithClaude => {
+                w.select_tab(tab);
+                self.toggle_claude_share();
+            }
             MenuCommand::Rename => {
                 w.select_tab(tab);
                 w.start_rename(tab, &self.config);
@@ -1065,6 +1091,12 @@ impl App {
             Action::SaveCommandOutput => self.current_block_action(Some(crate::blocks::BlockAction::SaveOutput)),
             Action::FoldOutput => self.current_block_action(Some(crate::blocks::BlockAction::Fold)),
             Action::CommandMenu => self.current_block_action(None),
+            Action::ClaudeAgents => self.open_agents(),
+            Action::ClaudeNextWaiting => self.next_waiting_agent(),
+            Action::AskClaude => self.ask_claude_current(),
+            Action::NewClaude => self.new_claude_tab(),
+            Action::ShareWithClaude => self.toggle_claude_share(),
+            Action::RemoveClaudePlugin => self.remove_claude_plugin(),
             Action::Hints => self.toggle_hints(),
             Action::OpenSettings => self.open_settings(),
             Action::Search => self.toggle_search(),
@@ -1265,6 +1297,8 @@ impl App {
         let mut file_requests = Vec::new();
         let mut progress_changed = false;
         let mut finished = None;
+        // Starts (None) and ends of commands, for Claude's shell jobs.
+        let mut shell_events: Vec<Option<Option<i32>>> = Vec::new();
         let mut notifications = Vec::new();
         for event in events {
             match event {
@@ -1280,8 +1314,12 @@ impl App {
                 TermEvent::Progress(progress) => progress_changed |= pane.report_progress(progress),
                 // Back at the prompt: whatever was in progress is over.
                 TermEvent::Prompt => progress_changed |= pane.report_progress(None),
-                TermEvent::CommandStarted(line) => pane.command = Some((Instant::now(), line)),
+                TermEvent::CommandStarted(line) => {
+                    pane.command = Some((Instant::now(), line));
+                    shell_events.push(None);
+                }
                 TermEvent::CommandFinished(status) => {
+                    shell_events.push(Some(status));
                     if let Some((started, line)) = pane.command.take() {
                         finished = Some((started.elapsed(), line, status));
                     }
@@ -1336,6 +1374,9 @@ impl App {
         }
         if let Some(text) = clipboard {
             self.set_clipboard(text, false);
+        }
+        for event in shell_events {
+            self.claude_shell_event(id, event);
         }
         if let Some(w) = &mut self.window {
             w.search_output(id);
@@ -1646,12 +1687,14 @@ impl App {
                 let bar_bottom = w.tab_bar.map_or(0.0, |b| b.y + b.height);
                 let below = w.tab_bar.is_some_and(|b| b.y == 0.0);
                 let ssh = w.tabs[i].active_pane().connection.as_ref().is_some_and(|c| c.managed);
+                let claude = (self.config.claude.panes && crate::claude::available()).then(|| w.tabs[i].active_pane().claude_shared);
                 w.menu = Some(Menu {
                     tab: i,
                     x: x as f32,
                     y: if below { bar_bottom } else { y as f32 },
                     hover: None,
                     ssh,
+                    claude,
                 });
                 w.window.request_redraw();
                 None
@@ -2141,6 +2184,7 @@ impl TermWindow {
 
     fn tab_infos(&self, config: &Config) -> Vec<TabInfo> {
         let fallback = default_title(config);
+        let now = Instant::now();
         self.tabs
             .iter()
             .enumerate()
@@ -2169,14 +2213,22 @@ impl TermWindow {
                     None => tabbar::process_icon(pane.process.as_deref()),
                 };
                 let (title, icon) = settings::tab_title(tab).unwrap_or((title, icon));
+                let claude = config.claude.status.then(|| self.claude_tab(i, now)).flatten();
+                let icon = claude.map_or(icon, |c| c.0);
                 let icon = if tab.broadcast { BROADCAST_ICON } else { icon };
+                let todos = claude.and_then(|c| c.2).map(|fraction| TabProgress {
+                    fraction: Some(fraction),
+                    state: ionterm_vt::ProgressState::Normal,
+                });
                 TabInfo {
                     title,
                     icon,
                     color: tab.color.or(extras.and_then(|e| e.color).map(|c| c.0)),
                     active: i == self.active_tab,
-                    progress: self.tab_progress(i),
+                    progress: self.tab_progress(i).or(todos),
                     activity: tab.activity,
+                    attention: claude.is_some_and(|c| c.1),
+                    shared: config.claude.panes && self.tab_shared(i),
                 }
             })
             .collect()
@@ -2591,15 +2643,18 @@ impl ApplicationHandler<UserEvent> for App {
         if std::mem::replace(&mut self.started, true) {
             return;
         }
+        // Before the first window, so its first pane gets IONTERM_SOCKET too.
+        if self.config.terminal.remote_control {
+            let proxy = self.proxy.clone();
+            crate::remote::listen(move |request| proxy.send_event(UserEvent::Remote(request)).is_ok());
+        }
         self.open_pending_windows(event_loop);
         if self.window.is_none() {
             event_loop.exit();
             return;
         }
-        if self.config.terminal.remote_control {
-            let proxy = self.proxy.clone();
-            crate::remote::listen(move |request| proxy.send_event(UserEvent::Remote(request)).is_ok());
-        }
+        // Keeps the plugin installed and current while a feature uses it.
+        self.ensure_claude_plugin();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -2742,6 +2797,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if event.state == ElementState::Pressed
                     && !field_key
                     && let Some(action) = KeyCombo::from_event(&event, mods).and_then(|c| self.bindings.get(&c))
+                    && claude::key_enabled(&self.config.claude, *action)
                 {
                     let action = *action;
                     return self.perform(action);
@@ -2876,6 +2932,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Remote(request) => self.remote_request(request),
+            UserEvent::Claude(event) => self.claude_background(event),
             UserEvent::Edit(id, event) => self.edit_event(id, event),
             UserEvent::Forward(pane, event) => {
                 if self.select_window_of_pane(pane) {
@@ -2941,7 +2998,10 @@ impl App {
         let progress_wake = self.window.as_mut().and_then(|w| w.expire_progress(now));
         let search_wake = self.window.as_mut().and_then(|w| w.refresh_search(now));
         let scrollbar_wake = self.window.as_mut().and_then(|w| w.expire_scrollbars(now));
-        let mut wake = [self.expire_files(now), progress_wake, search_wake, listening_wake, scrollbar_wake].into_iter().flatten().min();
+        let claude_wake = self.window.as_mut().and_then(|w| w.claude_timers(now, self.config.claude.status));
+        self.claude.expire(now);
+        self.ask_about_jobs();
+        let mut wake = [self.expire_files(now), progress_wake, search_wake, listening_wake, scrollbar_wake, claude_wake].into_iter().flatten().min();
         if let Some(w) = &mut self.window {
             let m = w.renderer.cell_metrics();
             let pointer = (w.pointer.x, w.pointer.y);

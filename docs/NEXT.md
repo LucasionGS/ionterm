@@ -79,7 +79,12 @@ crates/ionterm/          the app
                          windows.rs (several windows: the current/parked switch, opening and closing, moving tabs and panes, tab drag-out),
                          editing.rs (ionterm-edit and the panel's Edit: sudo/password/conflict dialogs, the editor tab, writing back on save),
                          forwards.rs (port forward picker, start/stop, saved forwards, tab bar chips, local listening ports),
-                         blocks.rs (sticky header, scrollbar, block handle and menu, block actions, folding clicks)
+                         blocks.rs (sticky header, scrollbar, block handle and menu, block actions, folding clicks),
+                         claude.rs (hook events onto panes, tab states, notifications, agents popup, Ask Claude,
+                         plugin install, the pane tools' jobs and approval dialog)
+  claude.rs              Claude Code without a window: the bundled plugin (extras/claude-plugin) and its install,
+                         `ionterm claude-hook`, Event/Agent state, the read-only command check
+  mcp.rs                 `ionterm mcp`: the plugin's MCP server (list_panes, read_pane, run, job, cancel) over the socket
   blocks.rs              command blocks without a window: finding blocks, the sticky header's text, markdown, scrollbar geometry, the block menu widget
   edit.rs                editing server files: the probe/read/write scripts (in-place writes, conflict check, sudo), local copies
   forward.rs             port forwards (ssh -O forward/cancel, Windows tunnels), specs, the server's and local listening ports

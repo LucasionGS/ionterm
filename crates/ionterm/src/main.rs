@@ -3,6 +3,7 @@
 mod app;
 mod blocks;
 mod cheatsheet;
+mod claude;
 mod commands;
 mod config;
 mod dialog;
@@ -15,6 +16,7 @@ mod forward;
 mod input;
 mod layout;
 mod links;
+mod mcp;
 mod menu;
 mod notifications;
 mod palette;
@@ -60,6 +62,13 @@ fn print_help() {
 }
 
 fn main() -> ExitCode {
+    // Run by the Claude Code plugin: report a hook, or serve the pane tools.
+    // Before logging starts, which goes to stdout: the MCP protocol's channel.
+    match std::env::args().nth(1).as_deref() {
+        Some("claude-hook") => return claude::hook_main(),
+        Some("mcp") => return mcp::main(),
+        _ => {}
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("IONTERM_LOG").unwrap_or_else(|_| EnvFilter::new("ionterm=info,warn")),

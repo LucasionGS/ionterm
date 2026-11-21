@@ -606,6 +606,19 @@ pub enum Action {
     DecreaseFontSize,
     ResetFontSize,
     ReloadConfig,
+    // Claude Code
+    /// Every Claude session, to jump to one.
+    ClaudeAgents,
+    /// Shows the next Claude session that needs you.
+    ClaudeNextWaiting,
+    /// Pastes the selection, or the current command's output, into Claude.
+    AskClaude,
+    /// A new tab running Claude Code.
+    NewClaude,
+    /// Shares the active pane with Claude's pane tools, or stops.
+    ShareWithClaude,
+    /// Removes the ionterm plugin from Claude Code.
+    RemoveClaudePlugin,
     /// Unbinds a default.
     None,
 }
@@ -693,6 +706,12 @@ impl Action {
             "decrease_font_size" => Self::DecreaseFontSize,
             "reset_font_size" => Self::ResetFontSize,
             "reload_config" => Self::ReloadConfig,
+            "claude_agents" | "agents" => Self::ClaudeAgents,
+            "claude_next_waiting" => Self::ClaudeNextWaiting,
+            "ask_claude" => Self::AskClaude,
+            "new_claude" | "new_claude_tab" => Self::NewClaude,
+            "share_with_claude" => Self::ShareWithClaude,
+            "remove_claude_plugin" => Self::RemoveClaudePlugin,
             "none" => Self::None,
             _ => return None,
         })
@@ -747,6 +766,8 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl+shift+b", "toggle_broadcast"),
     ("ctrl+shift+k", "clear_scrollback"),
     ("ctrl+shift+p", "command_palette"),
+    ("ctrl+shift+a", "claude_agents"),
+    ("ctrl+shift+j", "claude_next_waiting"),
     ("ctrl+shift+f2", "settings"),
     ("ctrl+shift+equal", "increase_font_size"),
     ("ctrl+shift+plus", "increase_font_size"),

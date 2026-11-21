@@ -297,6 +297,8 @@ pub enum BlockAction {
     OpenInPager,
     SaveOutput,
     Fold,
+    /// Pastes the command and its output into Claude (`[claude] ask`).
+    AskClaude,
 }
 
 impl BlockAction {
@@ -311,6 +313,7 @@ impl BlockAction {
             Self::SaveOutput => "Save output to Downloads",
             Self::Fold if folded => "Unfold output",
             Self::Fold => "Fold output",
+            Self::AskClaude => "Ask Claude about this",
         }
     }
 
@@ -318,7 +321,7 @@ impl BlockAction {
     fn applies(self, block: &Block) -> bool {
         match self {
             Self::CopyCommand | Self::Rerun => block.command.is_some(),
-            Self::CopyMarkdown => block.output.is_some() || block.command.is_some(),
+            Self::CopyMarkdown | Self::AskClaude => block.output.is_some() || block.command.is_some(),
             Self::Fold => block.finished && block.output.is_some_and(|(s, e)| e - s + 1 > 7),
             _ => block.output.is_some(),
         }
@@ -349,8 +352,10 @@ pub struct BlockMenu {
 }
 
 impl BlockMenu {
-    pub fn new(pane: crate::layout::PaneId, block: Block, folded: bool, x: f32, y: f32) -> Option<Self> {
-        let items: Vec<BlockAction> = ACTIONS.into_iter().filter(|a| a.applies(&block)).collect();
+    /// `ask_claude` adds "Ask Claude about this" (the feature is on).
+    pub fn new(pane: crate::layout::PaneId, block: Block, folded: bool, x: f32, y: f32, ask_claude: bool) -> Option<Self> {
+        let extra = ask_claude.then_some(BlockAction::AskClaude);
+        let items: Vec<BlockAction> = ACTIONS.into_iter().chain(extra).filter(|a| a.applies(&block)).collect();
         (!items.is_empty()).then_some(Self {
             pane,
             block,
@@ -564,11 +569,11 @@ mod tests {
     #[test]
     fn menus_offer_what_applies() {
         let (t, _) = session();
-        let menu = BlockMenu::new(1, block_at(&t, 3).unwrap(), false, 0.0, 0.0).unwrap();
+        let menu = BlockMenu::new(1, block_at(&t, 3).unwrap(), false, 0.0, 0.0, false).unwrap();
         assert!(menu.items.contains(&BlockAction::Rerun));
         assert!(menu.items.contains(&BlockAction::Fold));
         // The command line being typed has nothing yet.
-        assert!(BlockMenu::new(1, block_at(&t, 13).unwrap(), false, 0.0, 0.0).is_none());
+        assert!(BlockMenu::new(1, block_at(&t, 13).unwrap(), false, 0.0, 0.0, false).is_none());
     }
 
     #[test]

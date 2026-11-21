@@ -54,6 +54,14 @@ show_hidden = false                  # dotfiles in the SSH file panel (ctrl+h to
 command_done_after = 10              # seconds: announce longer commands ending in another tab/window; 0 = off
 from_programs = true                 # let programs send desktop notifications (OSC 9 / 777)
 
+[claude]                             # Claude Code support; shown in Settings only when `claude` is installed
+status = false                       # each tab shows its Claude session working, waiting for you or done (installs ionterm's plugin)
+notify = true                        # with status: notify when Claude needs you or finishes while you're elsewhere
+overview = false                     # ctrl+shift+a lists every session; ctrl+shift+j jumps to the next that needs you
+ask = false                          # "Ask Claude" pastes a command's output (or the selection) into Claude
+panes = false                        # Claude can read panes you share with it and run commands there (asks unless read-only)
+read_only = []                       # more commands that run without asking, by their first words, e.g. ["kubectl top", "mytool status"]
+
 [hints]
 open_file = ""                       # command for picked files: {path} {line} {col}, e.g. "code -g {path}:{line}:{col}"; empty = $EDITOR in a new tab
 

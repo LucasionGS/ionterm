@@ -43,6 +43,7 @@ Commands:
   set-title [-p PANE] [title]     Name a pane's tab (no title goes back to automatic)
   action [-p PANE] <name>         Run a keybinding action (new_tab, toggle_zoom, search…)
   version                         Print ionterm's version and the path of its program
+  claude-agents                   List Claude Code sessions (pane, state, project, shared, doing)
 
 PANE defaults to the pane the command runs in, or else the active one.";
 
@@ -218,6 +219,22 @@ pub fn send(args: &[String]) -> Option<std::io::Result<(u8, String)>> {
     #[cfg(not(unix))]
     {
         let _ = args;
+        None
+    }
+}
+
+/// Like `send`, giving up on the answer after `timeout`: for hooks, which
+/// must never hang.
+pub fn send_within(args: &[String], timeout: std::time::Duration) -> Option<std::io::Result<(u8, String)>> {
+    #[cfg(unix)]
+    {
+        let path = std::env::var_os("IONTERM_SOCKET")?;
+        let stream = std::os::unix::net::UnixStream::connect(path).ok()?;
+        Some(exchange(stream, args, Some(timeout)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (args, timeout);
         None
     }
 }

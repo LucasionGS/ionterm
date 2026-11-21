@@ -66,6 +66,12 @@ const COMMANDS: &[(&str, &str, &str, char)] = &[
     ("increase_font_size", "Bigger text", "View", '\u{F0415}'),
     ("decrease_font_size", "Smaller text", "View", '\u{F0374}'),
     ("reset_font_size", "Reset text size", "View", '\u{F0450}'),
+    ("claude_agents", "Claude sessions…", "Claude", '\u{F167A}'),
+    ("claude_next_waiting", "Next Claude session that needs you", "Claude", '\u{F009E}'),
+    ("new_claude", "New Claude session", "Claude", '\u{F167A}'),
+    ("ask_claude", "Ask Claude about this output", "Claude", '\u{F0B79}'),
+    ("share_with_claude", "Share this pane with Claude (or stop)", "Claude", '\u{F0337}'),
+    ("remove_claude_plugin", "Remove the ionterm plugin from Claude Code", "Claude", '\u{F0A79}'),
     ("settings", "Settings", "ionterm", '\u{F013}'),
     ("reload_config", "Reload config", "ionterm", '\u{F0450}'),
 ];

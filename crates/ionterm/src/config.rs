@@ -89,6 +89,7 @@ pub struct Config {
     pub hints: HintsConfig,
     pub notifications: NotificationsConfig,
     pub session: SessionConfig,
+    pub claude: ClaudeConfig,
     /// Key combo → action name, merged over the defaults. `"none"` unbinds.
     pub keybindings: HashMap<String, String>,
 }
@@ -165,6 +166,43 @@ pub struct NotificationsConfig {
     pub command_done_after: f32,
     /// Let programs send notifications (OSC 9 and OSC 777).
     pub from_programs: bool,
+}
+
+/// Claude Code support. Every feature is off until switched on, and the
+/// settings only show when `claude` is installed.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ClaudeConfig {
+    /// Live state in tabs: working, needs you, done. Needs the plugin,
+    /// which switching it on in settings installs.
+    pub status: bool,
+    /// Desktop notifications when Claude needs you or finishes while you're
+    /// elsewhere (with `status`).
+    pub notify: bool,
+    /// The agents popup (`claude_agents`) and `claude_next_waiting`.
+    pub overview: bool,
+    /// "Ask Claude" for a command's output or the selection.
+    pub ask: bool,
+    /// Lets Claude read and run commands in panes you share with it, through
+    /// the plugin's MCP server.
+    pub panes: bool,
+    /// Commands from Claude that run without asking: the first word (or the
+    /// first two, like `git log`) of a read-only command. Added to the
+    /// built-in list.
+    pub read_only: Vec<String>,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self {
+            status: false,
+            notify: true,
+            overview: false,
+            ask: false,
+            panes: false,
+            read_only: Vec::new(),
+        }
+    }
 }
 
 impl Default for NotificationsConfig {
